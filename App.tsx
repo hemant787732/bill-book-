@@ -4316,27 +4316,29 @@ function BillList({
     <View style={styles.recentList}>
       {bills.length ? (
         bills.map((bill) => (
-          <View key={bill.id} style={styles.recentRow}>
-            <Pressable onPress={() => void onOpenBill(bill.id)} style={styles.billRowMain}>
-              <Text style={styles.recentBillNo}>#{bill.billNo} - {formatDateForBill(bill.billDate)}</Text>
-              <Text style={styles.recentCustomer}>{bill.customerName || 'Customer'}</Text>
-              <Text style={styles.recentSync}>{bill.billType} | {bill.entryStatus === 'entered' ? 'clear' : 'pending'}</Text>
-            </Pressable>
-            <View style={styles.recentAmountBlock}>
-              <Text style={styles.recentAmount}>{formatMoney(bill.netTotal)}</Text>
-              <View style={styles.billActionRow}>
-                <Pressable onPress={() => void onOpenBill(bill.id)} style={styles.billIconButton}>
-                  <Text style={styles.billIconButtonText}>Open</Text>
-                </Pressable>
-                <Pressable onPress={() => void onShareBill(bill.id, 'customer')} style={[styles.billIconButton, styles.customerShareButton]}>
-                  <Text style={styles.billIconButtonText}>Cus</Text>
-                </Pressable>
-                <Pressable onPress={() => void onShareBill(bill.id, 'other')} style={styles.billIconButton}>
-                  <Text style={styles.billIconButtonText}>PDF</Text>
-                </Pressable>
+          <Pressable key={bill.id} onPress={() => void onOpenBill(bill.id)} style={{ marginBottom: 10 }}>
+            <Card style={{ flexDirection: 'row', alignItems: 'center', padding: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.recentBillNo}>#{bill.billNo} - {formatDateForBill(bill.billDate)}</Text>
+                <Text style={styles.recentCustomer}>{bill.customerName || 'Customer'}</Text>
+                <Text style={styles.recentSync}>{bill.billType} | {bill.entryStatus === 'entered' ? 'clear' : 'pending'}</Text>
               </View>
-            </View>
-          </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={styles.recentAmount}>{formatMoney(bill.netTotal)}</Text>
+                <View style={styles.billActionRow}>
+                  <Pressable onPress={() => void onOpenBill(bill.id)} style={styles.billIconButton}>
+                    <Text style={styles.billIconButtonText}>Open</Text>
+                  </Pressable>
+                  <Pressable onPress={() => void onShareBill(bill.id, 'customer')} style={[styles.billIconButton, styles.customerShareButton]}>
+                    <Text style={styles.billIconButtonText}>Cus</Text>
+                  </Pressable>
+                  <Pressable onPress={() => void onShareBill(bill.id, 'other')} style={styles.billIconButton}>
+                    <Text style={styles.billIconButtonText}>PDF</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </Card>
+          </Pressable>
         ))
       ) : (
         <Text style={styles.emptyText}>{emptyText}</Text>
