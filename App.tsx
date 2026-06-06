@@ -115,7 +115,7 @@ import {
   type MetalRates,
 } from './src/utils/calculations';
 import { createId, formatDateForBill, formatMoney, formatPlainNumber, localIsoDate, parseAmount } from './src/utils/format';
-import { BottomNav } from './src/ui';
+import { BottomNav, HeaderBar } from './src/ui';
 
 type Screen =
   | 'home'
@@ -4220,14 +4220,7 @@ function OldHomeScreen({
 }
 
 function PageHeader({ title, onBack }: { title: string; onBack: () => void }) {
-  return (
-    <View style={styles.topNav}>
-      <Pressable onPress={onBack} style={[styles.button, styles.secondaryButton, styles.navButton]}>
-        <Text style={styles.secondaryButtonText}>Back</Text>
-      </Pressable>
-      <Text numberOfLines={2} style={styles.screenTitle}>{title}</Text>
-    </View>
-  );
+  return <HeaderBar title={title} onBack={onBack} />;
 }
 
 function RatesScreen({

@@ -25,15 +25,24 @@ function NavButton({ label, active, onPress }: { label: string; active: boolean;
   );
 }
 
-export function HeaderBar({ title, onCreate }: { title?: string; onCreate?: () => void }) {
+export function HeaderBar({ title, onCreate, onBack }: { title?: string; onCreate?: () => void; onBack?: () => void }) {
   return (
     <View style={styles.header}>
-      <Text style={styles.headerTitle}>{title ?? ''}</Text>
+      {onBack ? (
+        <Pressable onPress={onBack} style={styles.backBtn}>
+          <Text style={styles.backText}>Back</Text>
+        </Pressable>
+      ) : (
+        <View style={{ width: 40 }} />
+      )}
+      <Text numberOfLines={1} style={styles.headerTitle}>{title ?? ''}</Text>
       {onCreate ? (
         <Pressable onPress={onCreate} style={styles.headerActionBtn}>
           <Text style={styles.headerAction}>＋</Text>
         </Pressable>
-      ) : null}
+      ) : (
+        <View style={{ width: 40 }} />
+      )}
     </View>
   );
 }
@@ -87,6 +96,13 @@ const styles = StyleSheet.create({
   },
   headerAction: {
     fontSize: 22,
+    color: '#007aff',
+  },
+  backBtn: {
+    padding: 8,
+  },
+  backText: {
+    fontSize: 16,
     color: '#007aff',
   },
 });
