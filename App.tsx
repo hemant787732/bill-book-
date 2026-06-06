@@ -20,6 +20,7 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { buildBillHtml } from './src/billHtml';
+import Card from './src/components/Card';
 import { HomeScreen as NewHomeScreen } from './src/screens/NewHome';
 import { SHOP } from './src/config';
 import { DatabaseProvider, useDatabase } from './src/data/dbContext';
@@ -4378,20 +4379,22 @@ function PartiesScreen({
       <View style={styles.folderGrid}>
         {filteredParties.length ? (
           filteredParties.map((folder) => (
-            <Pressable key={folder.customerId} onPress={() => onOpenParty(folder.customerId)} style={styles.folderCard}>
-              <View style={styles.folderIcon}>
-                <Text style={styles.folderIconText}>P</Text>
-              </View>
-              <View style={styles.folderBody}>
-                <Text style={styles.folderName}>{folder.customerName}</Text>
-                <Text style={styles.folderMeta}>
-                  {folder.billCount} bills | Last {formatDateForBill(folder.lastBillDate)}
-                </Text>
-                <Text style={styles.folderMeta}>{folder.customerMobile || 'No mobile'}</Text>
-                <Text style={styles.folderMeta}>{folder.customerAddress || 'No address'}</Text>
-                <PartyLedgerPills ledger={partyLedgerMap.get(folder.customerId)} />
-              </View>
-              <Text style={styles.folderAmount}>{formatMoney(partyLedgerMap.get(folder.customerId)?.labourBalance ?? folder.totalAmount)}</Text>
+            <Pressable key={folder.customerId} onPress={() => onOpenParty(folder.customerId)} style={{ marginBottom: 12 }}>
+              <Card style={{ flexDirection: 'row', alignItems: 'center', padding: 12 }}>
+                <View style={styles.folderIcon}>
+                  <Text style={styles.folderIconText}>P</Text>
+                </View>
+                <View style={styles.folderBody}>
+                  <Text style={styles.folderName}>{folder.customerName}</Text>
+                  <Text style={styles.folderMeta}>
+                    {folder.billCount} bills | Last {formatDateForBill(folder.lastBillDate)}
+                  </Text>
+                  <Text style={styles.folderMeta}>{folder.customerMobile || 'No mobile'}</Text>
+                  <Text style={styles.folderMeta}>{folder.customerAddress || 'No address'}</Text>
+                  <PartyLedgerPills ledger={partyLedgerMap.get(folder.customerId)} />
+                </View>
+                <Text style={styles.folderAmount}>{formatMoney(partyLedgerMap.get(folder.customerId)?.labourBalance ?? folder.totalAmount)}</Text>
+              </Card>
             </Pressable>
           ))
         ) : (
