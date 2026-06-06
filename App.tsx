@@ -7096,7 +7096,7 @@ const styles = StyleSheet.create({
   },
   button: {
     alignItems: 'center',
-    backgroundColor: '#9b2339',
+    backgroundColor: '#007a66',
     borderRadius: 8,
     minHeight: 40,
     justifyContent: 'center',
@@ -7140,7 +7140,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   clearButton: {
-    backgroundColor: '#35624b',
+    backgroundColor: '#007a66',
   },
   collapsedItemMeta: {
     color: '#6d665f',
@@ -7165,14 +7165,14 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   customerShareButton: {
-    backgroundColor: '#1f7a5b',
+    backgroundColor: '#007a66',
   },
   disabledButton: {
     backgroundColor: '#8d8a86',
   },
   editIconButton: {
     alignItems: 'center',
-    backgroundColor: '#9b2339',
+    backgroundColor: '#007a66',
     borderRadius: 8,
     flexShrink: 0,
     justifyContent: 'center',
@@ -7241,8 +7241,8 @@ const styles = StyleSheet.create({
   },
   folderCard: {
     alignItems: 'center',
-    backgroundColor: '#fffdfa',
-    borderColor: '#e4d8ce',
+    backgroundColor: '#fff',
+    borderColor: '#eee',
     borderRadius: 8,
     borderWidth: 1,
     flexDirection: 'row',
@@ -7330,8 +7330,8 @@ const styles = StyleSheet.create({
   },
   ledgerRow: {
     alignItems: 'center',
-    backgroundColor: '#fffdfa',
-    borderColor: '#e5d9ce',
+    backgroundColor: '#fff',
+    borderColor: '#eee',
     borderRadius: 8,
     borderWidth: 1,
     flexDirection: 'row',
@@ -7359,8 +7359,8 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   ledgerTable: {
-    backgroundColor: '#fffdfa',
-    borderColor: '#d9cbbf',
+    backgroundColor: '#fff',
+    borderColor: '#eee',
     borderRadius: 8,
     borderWidth: 1,
     minWidth: 640,
@@ -7680,8 +7680,8 @@ const styles = StyleSheet.create({
     paddingBottom: 44,
   },
   panel: {
-    backgroundColor: '#fffdfa',
-    borderColor: '#e4d8ce',
+    backgroundColor: '#fff',
+    borderColor: '#eee',
     borderRadius: 8,
     borderWidth: 1,
     overflow: 'hidden',
