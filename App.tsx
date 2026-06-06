@@ -5188,16 +5188,16 @@ function CashBankLedgerScreen({
           </View>
           {ledgerRows.length ? (
             ledgerRows.map((entry) => (
-              <View key={entry.id} style={styles.ledgerTableRow}>
+              <Card key={entry.id} style={{ flexDirection: 'row', alignItems: 'center', padding: 10 }}>
                 <Text style={[styles.ledgerTableCell, styles.ledgerDateCell]}>{formatDateForBill(entry.date)}</Text>
-                <View style={styles.ledgerParticularCell}>
+                <View style={[styles.ledgerParticularCell, { flex: 1 }]}>
                   <Text style={styles.ledgerParticularText}>{entry.particular}</Text>
                   <Text style={styles.ledgerPartyText}>{entry.party}</Text>
                 </View>
                 <Text style={styles.ledgerTableAmount}>{entry.receipt > 0 ? formatMoney(entry.receipt) : '-'}</Text>
                 <Text style={styles.ledgerTableAmount}>{entry.payment > 0 ? formatMoney(entry.payment) : '-'}</Text>
                 <Text style={styles.ledgerTableAmount}>{formatMoney(entry.balance)}</Text>
-              </View>
+              </Card>
             ))
           ) : (
             <Text style={styles.emptyText}>Selected period me {title.toLowerCase()} entry nahi hai.</Text>
