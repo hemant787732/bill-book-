@@ -20,6 +20,7 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { buildBillHtml } from './src/billHtml';
+import { HomeScreen as NewHomeScreen } from './src/screens/NewHome';
 import { SHOP } from './src/config';
 import { DatabaseProvider, useDatabase } from './src/data/dbContext';
 import {
@@ -3452,7 +3453,7 @@ function JewelleryBillBook() {
     <SafeAreaView edges={['top', 'right', 'bottom', 'left']} style={styles.safeArea}>
       <StatusBar style="dark" />
       {screen === 'home' ? (
-        <HomeScreen
+        <NewHomeScreen
           allBills={allBills}
           backupMessage={backupMessage}
           billReminders={billReminders}
