@@ -3,7 +3,7 @@ import { ScrollView, View, Text, Pressable, StyleSheet } from 'react-native';
 import { HeaderBar } from '../ui';
 import Card from '../components/Card';
 import FAB from '../components/FAB';
-import { formatMoney, localIsoDate } from '../utils/format';
+import { formatMoney, localIsoDate, formatDateForBill } from '../utils/format';
 import type { RecentBill, BillReminder, MarketStockSummary, PartyLedgerSummary, Language } from '../types';
 
 export function HomeScreen({
@@ -50,6 +50,10 @@ export function HomeScreen({
   silverRate: string;
 }) {
   const todayIso = localIsoDate();
+  // sort bills newest-first
+  const sortedBills = [...allBills].sort((a, b) => `${b.billDate}-${b.billNo}`.localeCompare(`${a.billDate}-${a.billNo}`));
+  const recent = sortedBills.slice(0, 5);
+
   const todayBills = allBills.filter((bill) => bill.billDate === todayIso);
   const todayAmount = todayBills.reduce((s, b) => s + b.netTotal, 0);
   const monthBills = allBills.filter((bill) => {
@@ -66,23 +70,66 @@ export function HomeScreen({
     <View style={styles.root}>
       <HeaderBar title="Dashboard" onCreate={onNewBill} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <View style={styles.hero}>
+          <View style={styles.heroInfo}>
+            <Text style={styles.heroTitle}>Quick dashboard</Text>
+            <Text style={styles.heroSubtitle}>Create bills, check balances and access ledgers quickly.</Text>
+          </View>
+          <View style={styles.rateTiles}>
+            <Pressable onPress={onRateEdit} style={styles.rateTile}>
+              <Text style={styles.rateLabel}>Gold</Text>
+              <Text style={styles.rateValue}>{formatMoney(goldRate)}</Text>
+              <Text style={styles.rateMeta}>10 gm</Text>
+            </Pressable>
+            <Pressable onPress={onRateEdit} style={[styles.rateTile, styles.silverRateTile]}>
+              <Text style={styles.rateLabel}>Silver</Text>
+              <Text style={styles.rateValue}>{formatMoney(silverRate)}</Text>
+              <Text style={styles.rateMeta}>1 kg</Text>
+            </Pressable>
+          </View>
+        </View>
+
         <View style={styles.summaryRow}>
           <Card style={styles.smallCard}>
             <Text style={styles.cardTitle}>Today's bills</Text>
             <Text style={styles.cardValue}>{todayBills.length}</Text>
             <Text style={styles.cardMeta}>{formatMoney(todayAmount)}</Text>
           </Card>
+
           <Card style={styles.smallCard}>
-            <Text style={styles.cardTitle}>Monthly amount</Text>
+            <Text style={styles.cardTitle}>This month</Text>
             <Text style={styles.cardValue}>{formatMoney(monthAmount)}</Text>
             <Text style={styles.cardMeta}>{`${monthBills.length} bills`}</Text>
           </Card>
+
           <Card style={styles.smallCard}>
-            <Text style={styles.cardTitle}>Fine due</Text>
+            <Text style={styles.cardTitle}>Due</Text>
             <Text style={styles.cardValue}>{formatMoney(fineDue)}</Text>
             <Text style={styles.cardMeta}>Labour: {formatMoney(labourDue)}</Text>
           </Card>
         </View>
+
+        <Card>
+          <Text style={styles.sectionTitle}>Recent bills</Text>
+          {recent.length ? (
+            recent.map((b) => (
+              <Pressable key={b.id} onPress={onBills} style={styles.recentRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.recentBillNo}>#{b.billNo} • {formatDateForBill(b.billDate)}</Text>
+                  <Text style={styles.recentCustomer}>{b.customerName || 'Customer'}</Text>
+                </View>
+                <Text style={styles.recentAmount}>{formatMoney(b.netTotal)}</Text>
+              </Pressable>
+            ))
+          ) : (
+            <Text style={styles.emptyText}>No recent bills</Text>
+          )}
+          <View style={styles.rowActions}>
+            <Pressable onPress={onBills} style={[styles.viewAllButton]}>
+              <Text style={styles.viewAllText}>View all bills</Text>
+            </Pressable>
+          </View>
+        </Card>
 
         <Card>
           <Text style={styles.sectionTitle}>Quick actions</Text>
@@ -92,9 +139,6 @@ export function HomeScreen({
             </Pressable>
             <Pressable style={styles.action} onPress={onParties}>
               <Text style={styles.actionText}>Parties</Text>
-            </Pressable>
-            <Pressable style={styles.action} onPress={onBills}>
-              <Text style={styles.actionText}>Bills</Text>
             </Pressable>
             <Pressable style={styles.action} onPress={onSuppliers}>
               <Text style={styles.actionText}>Suppliers</Text>
@@ -111,6 +155,9 @@ export function HomeScreen({
             <Pressable style={styles.action} onPress={onReminders}>
               <Text style={styles.actionText}>Reminders</Text>
             </Pressable>
+            <Pressable style={styles.action} onPress={onBackup}>
+              <Text style={styles.actionText}>Backup</Text>
+            </Pressable>
           </View>
         </Card>
 
@@ -124,13 +171,31 @@ export function HomeScreen({
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#f8faf8' },
   content: { padding: 12 },
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
-  smallCard: { flex: 1, marginRight: 8 },
+  hero: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  heroInfo: { flex: 1, paddingRight: 8 },
+  heroTitle: { fontSize: 18, fontWeight: '700', color: '#263238' },
+  heroSubtitle: { fontSize: 12, color: '#666', marginTop: 4 },
+  rateTiles: { flexDirection: 'row', gap: 8 },
+  rateTile: { backgroundColor: '#fff', padding: 8, borderRadius: 8, width: 110, alignItems: 'center', justifyContent: 'center' },
+  silverRateTile: {},
+  rateLabel: { fontSize: 12, color: '#666' },
+  rateValue: { fontSize: 16, fontWeight: '700', marginTop: 4 },
+  rateMeta: { fontSize: 11, color: '#999', marginTop: 4 },
+  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap' },
+  smallCard: { flexBasis: '31%', marginRight: 8 },
   cardTitle: { fontSize: 12, color: '#666' },
   cardValue: { fontSize: 20, fontWeight: '700', marginTop: 4 },
   cardMeta: { fontSize: 12, color: '#999', marginTop: 6 },
   sectionTitle: { fontSize: 14, fontWeight: '700', marginBottom: 8 },
-  actionsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  recentRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#eee' },
+  recentBillNo: { fontSize: 13, fontWeight: '600' },
+  recentCustomer: { fontSize: 12, color: '#666' },
+  recentAmount: { fontSize: 14, fontWeight: '700' },
+  emptyText: { color: '#888', paddingVertical: 8 },
+  rowActions: { marginTop: 8, alignItems: 'flex-end' },
+  viewAllButton: { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: '#007a66', borderRadius: 6 },
+  viewAllText: { color: '#fff', fontWeight: '700' },
+  actionsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
   action: { width: '48%', paddingVertical: 12, marginBottom: 8, alignItems: 'center', justifyContent: 'center', borderRadius: 6, backgroundColor: '#fff' },
   actionText: { fontSize: 14, fontWeight: '600' },
 });
