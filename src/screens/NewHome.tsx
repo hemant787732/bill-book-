@@ -64,6 +64,7 @@ export function HomeScreen({
   const monthAmount = monthBills.reduce((s, b) => s + b.netTotal, 0);
   const fineDue = partyLedgers.reduce((sum, ledger) => sum + ledger.fineBalance, 0);
   const labourDue = partyLedgers.reduce((sum, ledger) => sum + ledger.labourBalance, 0);
+  const totalDue = fineDue + labourDue;
   const dueReminders = billReminders.filter((r) => r.status === 'active');
 
   return (
@@ -104,7 +105,8 @@ export function HomeScreen({
 
           <Card style={styles.smallCard}>
             <Text style={styles.cardTitle}>Due</Text>
-            <Text style={styles.cardValue}>{formatMoney(fineDue)}</Text>
+            <Text style={styles.cardValue}>{formatMoney(totalDue)}</Text>
+            <Text style={styles.cardMeta}>Fine: {formatMoney(fineDue)}</Text>
             <Text style={styles.cardMeta}>Labour: {formatMoney(labourDue)}</Text>
           </Card>
         </View>
@@ -169,20 +171,20 @@ export function HomeScreen({
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#eef6f2' },
+  root: { flex: 1, backgroundColor: '#fff' },
   content: { padding: 10 },
   hero: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
   heroInfo: { flex: 1, paddingRight: 8 },
-  heroTitle: { fontSize: 18, fontWeight: '700', color: '#004d40' },
+  heroTitle: { fontSize: 18, fontWeight: '700', color: '#263238' },
   heroSubtitle: { fontSize: 12, color: '#666', marginTop: 4 },
   rateTiles: { flexDirection: 'row' },
-  rateTile: { backgroundColor: '#fff', padding: 8, borderRadius: 8, width: 100, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#e6f4ee' },
+  rateTile: { backgroundColor: '#fff', padding: 8, borderRadius: 8, width: 100, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#eee' },
   silverRateTile: {},
   rateLabel: { fontSize: 12, color: '#666' },
   rateValue: { fontSize: 16, fontWeight: '700', marginTop: 4 },
   rateMeta: { fontSize: 11, color: '#999', marginTop: 4 },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap' },
-  smallCard: { flexBasis: '31%', marginRight: 6, minWidth: 100 },
+  smallCard: { flexBasis: '31%', minWidth: 100 },
   cardTitle: { fontSize: 12, color: '#666' },
   cardValue: { fontSize: 18, fontWeight: '700', marginTop: 4 },
   cardMeta: { fontSize: 12, color: '#777', marginTop: 6 },
@@ -196,6 +198,6 @@ const styles = StyleSheet.create({
   viewAllButton: { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: '#007a66', borderRadius: 6 },
   viewAllText: { color: '#fff', fontWeight: '700' },
   actionsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
-  action: { width: '48%', paddingVertical: 12, marginBottom: 8, alignItems: 'center', justifyContent: 'center', borderRadius: 6, backgroundColor: '#f4fbf9', borderWidth: 1, borderColor: '#e6f4ee' },
-  actionText: { fontSize: 14, fontWeight: '600', color: '#004d40' },
+  action: { width: '48%', paddingVertical: 12, marginBottom: 8, alignItems: 'center', justifyContent: 'center', borderRadius: 6, backgroundColor: '#fff', borderWidth: 1, borderColor: '#eee' },
+  actionText: { fontSize: 14, fontWeight: '600', color: '#263238' },
 });
