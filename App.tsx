@@ -114,6 +114,7 @@ import {
   type MetalRates,
 } from './src/utils/calculations';
 import { createId, formatDateForBill, formatMoney, formatPlainNumber, localIsoDate, parseAmount } from './src/utils/format';
+import { BottomNav } from './src/ui';
 
 type Screen =
   | 'home'
@@ -3760,6 +3761,7 @@ function JewelleryBillBook() {
         onDownload={handlePreparedWebPdfDownload}
         onShare={handlePreparedWebPdfShare}
       />
+    <BottomNav current={screen} onNavigate={(s: any) => setScreen(s)} />
     </SafeAreaView>
   );
 }
