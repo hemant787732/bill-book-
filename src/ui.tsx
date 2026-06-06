@@ -65,14 +65,14 @@ const styles = StyleSheet.create({
   },
   label: {
     fontSize: 12,
-    color: '#222',
+    color: '#263238',
   },
   active: {
-    backgroundColor: '#f4f9f5',
+    backgroundColor: '#e8f7f1',
   },
   activeLabel: {
     fontWeight: '700',
-    color: '#0a7',
+    color: '#007a66',
   },
   pressed: {
     opacity: 0.6,
@@ -90,19 +90,20 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontWeight: '700',
+    color: '#263238',
   },
   headerActionBtn: {
     padding: 8,
   },
   headerAction: {
     fontSize: 22,
-    color: '#007aff',
+    color: '#007a66',
   },
   backBtn: {
     padding: 8,
   },
   backText: {
     fontSize: 16,
-    color: '#007aff',
+    color: '#007a66',
   },
 });
