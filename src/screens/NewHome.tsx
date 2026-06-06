@@ -4,6 +4,7 @@ import { HeaderBar } from '../ui';
 import Card from '../components/Card';
 import FAB from '../components/FAB';
 import { formatMoney, localIsoDate, formatDateForBill } from '../utils/format';
+import { formatCalcValue } from '../utils/calculations';
 import type { RecentBill, BillReminder, MarketStockSummary, PartyLedgerSummary, Language } from '../types';
 
 export function HomeScreen({
@@ -105,33 +106,10 @@ export function HomeScreen({
 
           <Card style={styles.smallCard}>
             <Text style={styles.cardTitle}>Due</Text>
-            <Text style={styles.cardValue}>{formatMoney(totalDue)}</Text>
-            <Text style={styles.cardMeta}>Fine: {formatMoney(fineDue)}</Text>
-            <Text style={styles.cardMeta}>Labour: {formatMoney(labourDue)}</Text>
+            <Text style={styles.cardValue}>{formatMoney(labourDue)}</Text>
+            <Text style={styles.cardMeta}>Fine: {formatCalcValue(fineDue, 3)} gm</Text>
           </Card>
         </View>
-
-        <Card>
-          <Text style={styles.sectionTitle}>Recent bills</Text>
-          {recent.length ? (
-            recent.map((b) => (
-              <Pressable key={b.id} onPress={onBills} style={styles.recentRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.recentBillNo}>#{b.billNo} • {formatDateForBill(b.billDate)}</Text>
-                  <Text style={styles.recentCustomer}>{b.customerName || 'Customer'}</Text>
-                </View>
-                <Text style={styles.recentAmount}>{formatMoney(b.netTotal)}</Text>
-              </Pressable>
-            ))
-          ) : (
-            <Text style={styles.emptyText}>No recent bills</Text>
-          )}
-          <View style={styles.rowActions}>
-            <Pressable onPress={onBills} style={[styles.viewAllButton]}>
-              <Text style={styles.viewAllText}>View all bills</Text>
-            </Pressable>
-          </View>
-        </Card>
 
         <Card>
           <Text style={styles.sectionTitle}>Quick actions</Text>
@@ -159,6 +137,28 @@ export function HomeScreen({
             </Pressable>
             <Pressable style={styles.action} onPress={onBackup}>
               <Text style={styles.actionText}>Backup</Text>
+            </Pressable>
+          </View>
+        </Card>
+
+        <Card>
+          <Text style={styles.sectionTitle}>Recent bills</Text>
+          {recent.length ? (
+            recent.map((b) => (
+              <Pressable key={b.id} onPress={onBills} style={styles.recentRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.recentBillNo}>#{b.billNo} • {formatDateForBill(b.billDate)}</Text>
+                  <Text style={styles.recentCustomer}>{b.customerName || 'Customer'}</Text>
+                </View>
+                <Text style={styles.recentAmount}>{formatMoney(b.netTotal)}</Text>
+              </Pressable>
+            ))
+          ) : (
+            <Text style={styles.emptyText}>No recent bills</Text>
+          )}
+          <View style={styles.rowActions}>
+            <Pressable onPress={onBills} style={[styles.viewAllButton]}>
+              <Text style={styles.viewAllText}>View all bills</Text>
             </Pressable>
           </View>
         </Card>
