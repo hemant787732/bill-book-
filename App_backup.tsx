@@ -7,7 +7,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   BackHandler,
-  Linking,
   Modal,
   NativeModules,
   Platform,
@@ -18,7 +17,6 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { buildBillHtml } from './src/billHtml';
@@ -33,7 +31,6 @@ import {
   createBill,
   createPartyTransaction,
   createSupplierTransaction,
-  deletePartyWithBills,
   extendBillReminder,
   getAllBills,
   getAllBillTransactions,
@@ -67,14 +64,8 @@ import {
   upsertBillReminder,
   upsertMarketRun,
   upsertRate,
-  getPartiesWithJangadBills,
-  getJangadBillsForParty,
-  getReturnsForBill,
-  saveJangadReturn,
-  deleteJangadReturn,
 } from './src/data/database';
-import { restoreFromSupabaseBackup, syncPendingChanges, uploadPendingChanges } from './src/data/sync';
-import { startRealtimeSync, stopRealtimeSync, setRealtimeSyncCallback } from './src/data/realtimeSync';
+import { restoreFromSupabaseBackup, syncPendingChanges } from './src/data/sync';
 import { languageNames, t, translateNameOrItem } from './src/i18n';
 import {
   AddSupplierScreen as SupplierAddScreen,
@@ -94,8 +85,6 @@ import type {
   CashBankEntry,
   CustomerDraft,
   ItemNameOption,
-  JangadReturnItem,
-  JangadReturnVoucher,
   Language,
   LedgerMode,
   LabourType,
@@ -113,20 +102,17 @@ import type {
   SupplierLedgerSummary,
   SupplierTransaction,
   SupplierTransactionMode,
-  SyncStatus,
 } from './src/types';
 import {
   autoCalculateItem,
   calculateLabourCharge,
   calculateNetTotal,
   calculateReceivedFine,
-  calculateSubtotal,
   calculateTotalFine,
   formatCalcValue,
   getMetalRatePerGram,
   getMetalRateUnit,
   roundFineToHalfGram,
-  roundWeight,
   type MetalRates,
 } from './src/utils/calculations';
 import { createId, formatDateForBill, formatMoney, formatPlainNumber, localIsoDate, parseAmount } from './src/utils/format';
@@ -140,7 +126,6 @@ type Screen =
   | 'parties'
   | 'addParty'
   | 'partyBills'
-  | 'partyVouchers'
   | 'partyTransact'
   | 'suppliers'
   | 'addSupplier'
@@ -152,8 +137,7 @@ type Screen =
   | 'backup'
   | 'itemNames'
   | 'reminders'
-  | 'marketStock'
-  | 'jangadBook';
+  | 'marketStock';
 type BillPeriod = 'today' | 'week' | 'month' | 'custom';
 type LedgerPeriod = BillPeriod | 'year';
 type WebPdfShareTarget = 'customer' | 'other';
@@ -320,7 +304,7 @@ function formatBillMoney(value: string | number | null | undefined, autoRoundFig
   return formatMoney(autoRoundFigure ? roundToTen(parseAmount(value)) : roundRupeeForDisplay(value));
 }
 
-function emptyItem(material: MetalType = 'silver'): BillItemDraft {
+function emptyItem(material: MetalType = 'gold'): BillItemDraft {
   return {
     amount: '',
     fine: '',
@@ -630,8 +614,6 @@ function partyTransactionModeLabel(mode: PartyTransactionMode) {
       return 'Cash + bank receipt';
     case 'fine':
       return 'Metal receipt';
-    case 'fine_rec':
-      return 'Fine rec';
     case 'payment':
       return 'Payment given';
     case 'discount':
@@ -657,7 +639,7 @@ function partyTransactionDisplayAmount(transaction: PartyTransaction) {
 }
 
 function partyTransactionMetalRateLabel(transaction: Pick<PartyTransaction, 'material'>) {
-  return 'Silver / 1 kg';
+  return transaction.material === 'gold' ? 'Gold / 10 gm' : 'Silver / 1 kg';
 }
 
 function fineValueFromBookedRate(material: MetalType, fineWeight: string | number, bookedRate: string | number) {
@@ -666,7 +648,7 @@ function fineValueFromBookedRate(material: MetalType, fineWeight: string | numbe
   if (fine <= 0 || rate <= 0) {
     return 0;
   }
-  return (fine * rate) / 1000;
+  return material === 'gold' ? (fine * rate) / 10 : (fine * rate) / 1000;
 }
 
 function normalizeWhatsappNumber(value: string) {
@@ -735,11 +717,7 @@ function voucherAmountRows(transaction: PartyTransaction) {
     rows.push({ label: 'Discount allowed', value: formatBillMoney(transaction.discountAmount) });
   }
   if (transaction.fineWeight > 0) {
-    if (transaction.mode === 'fine_rec') {
-      rows.push({ label: 'Fine received', value: `${formatCalcValue(transaction.fineWeight, 3)} gm` });
-    } else {
-      rows.push({ label: 'Metal received', value: `${formatCalcValue(transaction.fineWeight, 3)} gm` });
-    }
+    rows.push({ label: 'Metal received', value: `${formatCalcValue(transaction.fineWeight, 3)} gm` });
     if (transaction.bookedRate > 0) {
       rows.push({
         label: 'Metal value',
@@ -1012,7 +990,7 @@ function rateSummaryLines(items: BillItemDraft[]) {
     if (!rateText) {
       continue;
     }
-    const label = item.material === 'silver' ? 'Silver / 1 kg' : 'Silver / 1 kg';
+    const label = item.material === 'silver' ? 'Silver / 1 kg' : 'Gold / 10 gm';
     values.set(`${item.material}-${rateText}`, `Booked rate - ${label}: ${rateText}`);
   }
 
@@ -1029,7 +1007,7 @@ function bookedRateInfoFromItems(items: BillItemDraft[]) {
   if (!item) {
     return {
       label: 'Booked rate',
-      material: 'silver' as MetalType,
+      material: 'gold' as MetalType,
       ratePerGram: 0,
       unitRate: 0,
     };
@@ -1038,7 +1016,7 @@ function bookedRateInfoFromItems(items: BillItemDraft[]) {
   const ratePerGram = parseAmount(item.rate);
   const unitRate = item.material === 'silver' ? ratePerGram * 1000 : ratePerGram * 10;
   return {
-    label: item.material === 'silver' ? 'Silver / 1 kg' : 'Silver / 1 kg',
+    label: item.material === 'silver' ? 'Silver / 1 kg' : 'Gold / 10 gm',
     material: item.material,
     ratePerGram,
     unitRate,
@@ -1301,7 +1279,7 @@ function fineReceiptRateUnitFromItems(material: MetalType, items: BillItemDraft[
   const saleItem = items.find((item) => item.material === material && parseAmount(item.rate) > 0);
   if (saleItem) {
     const ratePerGram = parseAmount(saleItem.rate);
-    return material === 'silver' ? ratePerGram * 10 : ratePerGram * 1000;
+    return material === 'gold' ? ratePerGram * 10 : ratePerGram * 1000;
   }
 
   return getMetalRateUnit(material, rates);
@@ -1335,7 +1313,9 @@ function webPdfFrameSize(payload: BillPayload) {
   if (anyPayload.pdfFrame && typeof anyPayload.pdfFrame.width === 'number' && typeof anyPayload.pdfFrame.height === 'number') {
     return { height: anyPayload.pdfFrame.height, width: anyPayload.pdfFrame.width };
   }
-  return { height: 700, width: 660 };
+  return payload.billType === 'wholesale'
+    ? { height: 900, width: 720 }
+    : { height: 700, width: 660 };
 }
 
 function wrapNativePdfViewport(html: string) {
@@ -1406,7 +1386,6 @@ async function renderBillPdfBlobOnWeb(payload: BillPayload, html: string) {
 
   const frame = webPdfFrameSize(payload);
   const page = pdfPrintSize(payload);
-  // @ts-ignore
   const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')]);
   const holder = document.createElement('div');
   holder.style.left = '-10000px';
@@ -1555,6 +1534,7 @@ async function createNamedNativePdf(payload: BillPayload, html: string) {
     height: size.height,
     html: exactHtml,
     margins: { bottom: 0, left: 0, right: 0, top: 0 },
+    textZoom: 100,
     width: size.width,
   });
   const ExpoFile = FileSystem.File as unknown as new (...uris: unknown[]) => ExpoFsFile;
@@ -1595,10 +1575,8 @@ async function sharePdfDirectlyToWhatsapp(uri: string, payload: BillPayload) {
     return false;
   }
 
-  // @ts-ignore
   let NativeShare: typeof import('react-native-share').default;
   try {
-    // @ts-ignore
     ({ default: NativeShare } = await import('react-native-share'));
   } catch {
     return false;
@@ -1743,7 +1721,6 @@ async function requestNotificationAccess() {
   }
 
   try {
-    // @ts-ignore
     const Notifications = await import('expo-notifications');
     const current = await Notifications.getPermissionsAsync();
     const finalStatus = current.granted ? current : await Notifications.requestPermissionsAsync();
@@ -1787,7 +1764,6 @@ async function cancelScheduledReminderNotification(notificationId: string) {
   }
 
   try {
-    // @ts-ignore
     const Notifications = await import('expo-notifications');
     await Notifications.cancelScheduledNotificationAsync(notificationId);
   } catch {
@@ -1819,7 +1795,6 @@ async function scheduleReminderNotification(reminder: BillReminder) {
   }
 
   try {
-    // @ts-ignore
     const Notifications = await import('expo-notifications');
     return await Notifications.scheduleNotificationAsync({
       content: { body, title },
@@ -1845,14 +1820,10 @@ export default function App() {
 
 function JewelleryBillBook() {
   const db = useDatabase();
-  const [screen, setScreenState] = useState<Screen>('home');
-  const prevScreenRef = useRef<Screen>('home');
-  function setScreen(s: Screen) {
-    prevScreenRef.current = screen;
-    setScreenState(s);
-  }
+  const [screen, setScreen] = useState<Screen>('home');
   const [latestRate, setLatestRate] = useState<Rate | null>(null);
   const [rateDate, setRateDate] = useState(localIsoDate());
+  const [goldRate, setGoldRate] = useState('62310');
   const [silverRate, setSilverRate] = useState('1898');
   const [billNo, setBillNo] = useState(101);
   const [billDate, setBillDate] = useState(localIsoDate());
@@ -1862,18 +1833,18 @@ function JewelleryBillBook() {
   const [items, setItems] = useState<BillItemDraft[]>([
     autoCalculateItem(
       {
-        ...emptyItem('silver'),
+        ...emptyItem('gold'),
         itemName: 'Ring',
         labour: '3',
         pcs: '4',
         touch: '77',
         weight: '6.26',
       },
-      { silver1kgRate: 1898 },
+      { gold10gRate: 62310, silver1kgRate: 1898 },
     ),
   ]);
   const [receiptType, setReceiptType] = useState<ReceiptType>('none');
-  const [receiptMaterial, setReceiptMaterial] = useState<MetalType>('silver');
+  const [receiptMaterial, setReceiptMaterial] = useState<MetalType>('gold');
   const [receivedFine, setReceivedFine] = useState('');
   const [receivedGrossWeight, setReceivedGrossWeight] = useState('');
   const [receivedTouch, setReceivedTouch] = useState('');
@@ -1881,7 +1852,6 @@ function JewelleryBillBook() {
   const [receivedPriceOverride, setReceivedPriceOverride] = useState('');
   const [rateCutFine, setRateCutFine] = useState('');
   const [rateCutAmount, setRateCutAmount] = useState('');
-  const [billNote, setBillNote] = useState('');
   const [rateCutAdjustsLabour, setRateCutAdjustsLabour] = useState(true);
   const [discountAmount, setDiscountAmount] = useState('');
   const [discountDirty, setDiscountDirty] = useState(false);
@@ -1904,6 +1874,7 @@ function JewelleryBillBook() {
   const [billReminders, setBillReminders] = useState<BillReminder[]>([]);
   const [marketStockRows, setMarketStockRows] = useState<MarketStockSummary[]>([]);
   const [marketDate, setMarketDate] = useState(localIsoDate());
+  const [marketGoldWeight, setMarketGoldWeight] = useState('');
   const [marketSilverWeight, setMarketSilverWeight] = useState('');
   const [marketNote, setMarketNote] = useState('');
   const [billPeriod, setBillPeriod] = useState<BillPeriod>('today');
@@ -1920,7 +1891,6 @@ function JewelleryBillBook() {
   const [viewingBillId, setViewingBillId] = useState<string | null>(null);
   const [viewingBillPayload, setViewingBillPayload] = useState<BillPayload | null>(null);
   const [viewingBillTransactions, setViewingBillTransactions] = useState<BillTransaction[]>([]);
-  const [viewingBillReturns, setViewingBillReturns] = useState<(JangadReturnVoucher & { items: JangadReturnItem[] })[]>([]);
   const [billViewBackScreen, setBillViewBackScreen] = useState<Screen>('bills');
   const [backupMessage, setBackupMessage] = useState('');
   const [lastSavedPayload, setLastSavedPayload] = useState<BillPayload | null>(null);
@@ -1937,9 +1907,10 @@ function JewelleryBillBook() {
 
   const rates: MetalRates = useMemo(
     () => ({
+      gold10gRate: parseAmount(goldRate),
       silver1kgRate: parseAmount(silverRate),
     }),
-    [silverRate],
+    [goldRate, silverRate],
   );
 
   const calculatedItems = useMemo(() => items.map((item) => autoCalculateItem(item, rates)), [items, rates]);
@@ -1983,17 +1954,31 @@ function JewelleryBillBook() {
     return amount > 0 ? formatCalcValue(amount, 2) : '';
   }, [resolvedDiscountInput]);
   const autoTotals = useMemo(
-    () => {
-      const sub = calculateSubtotal(calculatedItems);
-      const rc = receiptType === 'cash' || receiptType === 'fine_cash'
-        ? parseAmount(receivedCash)
-        : 0;
-      return { subtotal: sub, receivedValue: rc };
-    },
+    () =>
+      calculateNetTotal(
+        calculatedItems,
+        {
+          receiptMaterial,
+          receiptType,
+          receivedCash,
+          receivedFine: activeReceivedFine,
+          receivedGrossWeight,
+          receivedPriceOverride: '',
+          receivedRate: effectiveReceivedRate,
+          receivedTouch,
+        },
+        rates,
+      ),
     [
       calculatedItems,
+      activeReceivedFine,
+      effectiveReceivedRate,
+      rates,
+      receiptMaterial,
       receiptType,
       receivedCash,
+      receivedGrossWeight,
+      receivedTouch,
     ],
   );
   const totals = useMemo(() => {
@@ -2030,7 +2015,6 @@ function JewelleryBillBook() {
       finalAmountOverride: totals.finalAmountOverride,
       netTotal: totals.netTotal,
       discountAmount: activeDiscountAmount,
-      note: billNote,
       receiptMaterial,
       receiptType,
       receivedCash,
@@ -2069,7 +2053,6 @@ function JewelleryBillBook() {
       totals.roundFigureEnabled,
       totals.subtotal,
       activeDiscountAmount,
-      billNote,
     ],
   );
 
@@ -2181,7 +2164,7 @@ function JewelleryBillBook() {
     if (rate) {
       setLatestRate(rate);
       setRateDate(rate.rateDate);
-      setSilverRate(String(rate.silver1kgRate));
+      setGoldRate(String(rate.gold10gRate));
       setSilverRate(String(rate.silver1kgRate));
     }
 
@@ -2225,11 +2208,6 @@ function JewelleryBillBook() {
     }
 
     if (screen === 'partyTransact') {
-      setScreen('partyVouchers');
-      return true;
-    }
-
-    if (screen === 'partyVouchers') {
       setScreen('partyBills');
       return true;
     }
@@ -2268,25 +2246,27 @@ function JewelleryBillBook() {
 
     async function loadAndSync() {
       await refreshScreen();
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
 
       setIsSyncing(true);
       try {
         const result = await syncPendingChanges(db);
-        if (mounted) {
-          setSyncMessage(clientSyncMessage(result.ok));
-          await refreshScreen();
+        if (!mounted) {
+          return;
         }
+        setSyncMessage(clientSyncMessage(result.ok));
+        await refreshScreen();
       } catch (error) {
-        console.error('Initial sync error:', error);
-        if (mounted) setSyncMessage(clientSyncMessage(false));
+        if (!mounted) {
+          return;
+        }
+        setSyncMessage(clientSyncMessage(false));
       } finally {
-        if (mounted) setIsSyncing(false);
-      }
-
-      if (mounted) {
-        startRealtimeSync(db);
-        setRealtimeSyncCallback(refreshScreen);
+        if (mounted) {
+          setIsSyncing(false);
+        }
       }
     }
 
@@ -2294,7 +2274,6 @@ function JewelleryBillBook() {
 
     return () => {
       mounted = false;
-      stopRealtimeSync();
     };
   }, [db]);
 
@@ -2309,8 +2288,8 @@ function JewelleryBillBook() {
 
   useEffect(() => {
     const intervalId = setInterval(() => {
-      void triggerBackgroundUpload();
-    }, 2000);
+      void runOnlineSync(false);
+    }, 1000);
     return () => clearInterval(intervalId);
   }, [db]);
 
@@ -2345,19 +2324,6 @@ function JewelleryBillBook() {
     return () => window.removeEventListener('popstate', onPopState);
   }, [billViewBackScreen, screen, selectedSupplierId, sharePromptPayload, webPdfShareFile]);
 
-  async function triggerBackgroundUpload() {
-    try {
-      const result = await uploadPendingChanges(db);
-      if (!result.ok) {
-        console.warn('Background upload failed:', result.message);
-      } else {
-        console.log('Background upload OK');
-      }
-    } catch (error) {
-      console.warn('Background upload error:', error);
-    }
-  }
-
   async function runOnlineSync(showAlert = false) {
     if (syncLoopRunningRef.current) {
       return { ok: true, message: 'Sync already running.' };
@@ -2365,9 +2331,10 @@ function JewelleryBillBook() {
     syncLoopRunningRef.current = true;
     setIsSyncing(true);
     try {
-      const result = await uploadPendingChanges(db);
+      const result = await syncPendingChanges(db);
       const message = clientSyncMessage(result.ok);
       setSyncMessage(message);
+      await refreshScreen();
       if (showAlert) {
         Alert.alert(result.ok ? 'Data updated' : 'Internet update pending', message);
       }
@@ -2387,11 +2354,11 @@ function JewelleryBillBook() {
 
   function resetBillDraft() {
     setCustomer({ address: '', mobile: '', name: '' });
-    setItems([]);
+    setItems([emptyItem('gold')]);
     setBillDate(localIsoDate());
     setBillType('estimate');
     setReceiptType('none');
-    setReceiptMaterial('silver');
+    setReceiptMaterial('gold');
     setReceivedFine('');
     setReceivedGrossWeight('');
     setReceivedTouch('');
@@ -2407,26 +2374,15 @@ function JewelleryBillBook() {
     setReminderEnabled(false);
     setReminderDays('3');
     setReminderTime('10:00');
-    setBillNote('');
   }
 
-  async function startBlankBill() {
+  function startBlankBill() {
     resetBillDraft();
-    setBillNo(await getNextBillNo(db, 'estimate'));
-    setBillType('estimate');
     setEditingBillId(null);
     setScreen('bill');
   }
 
-  async function startJangadBill() {
-    resetBillDraft();
-    setBillNo(await getNextBillNo(db, 'jangad'));
-    setBillType('jangad');
-    setEditingBillId(null);
-    setScreen('bill');
-  }
-
-  async function startPartyBill(folder: PartyFolder) {
+  function startPartyBill(folder: PartyFolder) {
     const ledger = partyLedgerMap.get(folder.customerId);
     setCustomer({
       address: folder.customerAddress,
@@ -2437,12 +2393,11 @@ function JewelleryBillBook() {
       openingLabourBalance: String(currentPartyAmountOpening(folder, ledger) || ''),
       openingNote: folder.openingNote,
     });
-    setItems([]);
+    setItems([emptyItem('gold')]);
     setBillDate(localIsoDate());
-    setBillNo(await getNextBillNo(db, 'estimate'));
     setBillType('estimate');
     setReceiptType('none');
-    setReceiptMaterial('silver');
+    setReceiptMaterial('gold');
     setReceivedFine('');
     setReceivedGrossWeight('');
     setReceivedTouch('');
@@ -2509,6 +2464,17 @@ function JewelleryBillBook() {
       setAutoRoundFigure(false);
     }
     setFinalAmountOverride(value);
+  }
+
+  function updateBillGoldRate(value: string) {
+    clearFinalOverrideForAutoCalc();
+    const nextRates = { ...rates, gold10gRate: parseAmount(value) };
+    setGoldRate(value);
+    setItems((current) =>
+      current.map((item) =>
+        item.material === 'gold' ? { ...autoCalculateItem({ ...item, rate: '' }, nextRates), rate: '' } : item,
+      ),
+    );
   }
 
   function updateBillSilverRate(value: string) {
@@ -2579,12 +2545,6 @@ function JewelleryBillBook() {
         if (key === 'material') {
           nextItem.rate = '';
         }
-        if (key === 'weight' || key === 'packetLess') {
-          const parsed = parseFloat(value);
-          if (!isNaN(parsed) && parsed > 0) {
-            nextItem[key] = roundWeight(parsed).toString();
-          }
-        }
         const calculated = autoCalculateItem(nextItem, rates);
         return key === 'rate' || key === 'material' ? { ...calculated, rate: nextItem.rate } : calculated;
       }),
@@ -2606,12 +2566,22 @@ function JewelleryBillBook() {
       receiptHasFine(payload.receiptType)
         ? formatCalcValue(fineReceiptRateUnitFromItems(payload.receiptMaterial, cleanItems, rates), 2)
         : '';
-    const cleanSubtotal = calculateSubtotal(cleanItems);
-    const cleanReceivedValue = payload.receiptType === 'cash' || payload.receiptType === 'fine_cash'
-      ? parseAmount(payload.receivedCash)
-      : 0;
-    const subtotal = Math.max(cleanSubtotal, 0);
-    const autoNetTotal = Math.max(subtotal + cleanRateCutAmount - cleanReceivedValue - cleanDiscountAmount, 0);
+    const cleanTotals = calculateNetTotal(
+      cleanItems,
+      {
+        receiptMaterial: payload.receiptMaterial,
+        receiptType: payload.receiptType,
+        receivedCash: payload.receivedCash,
+        receivedFine: payload.receivedFine,
+        receivedGrossWeight: payload.receivedGrossWeight,
+        receivedPriceOverride: '',
+        receivedRate: cleanReceivedRate,
+        receivedTouch: payload.receivedTouch,
+      },
+      rates,
+    );
+    const subtotal = Math.max(cleanTotals.subtotal, 0);
+    const autoNetTotal = Math.max(subtotal + cleanRateCutAmount - cleanTotals.receivedValue - cleanDiscountAmount, 0);
     const netTotal = finalOverride
       ? Math.max(parseAmount(finalOverride), 0)
       : payload.autoRoundFigure
@@ -2640,7 +2610,7 @@ function JewelleryBillBook() {
       rateCutAdjustsLabour: true,
       rateCutBookedRate: cleanRateCutFine > 0 ? cleanRateCutInfo.unitRate : 0,
       receivedPriceOverride: receiptHasFine(payload.receiptType) ? '' : payload.receivedPriceOverride,
-      receivedValue: cleanReceivedValue,
+      receivedValue: cleanTotals.receivedValue,
       subtotal,
     };
   }
@@ -2761,22 +2731,24 @@ function JewelleryBillBook() {
   }
 
   async function handleSaveRates() {
+    const gold = parseAmount(goldRate);
     const silver = parseAmount(silverRate);
 
-    if (!rateDate.trim() || silver <= 0) {
-      Alert.alert('Rates required', 'Silver rate should be greater than 0.');
+    if (!rateDate.trim() || gold <= 0 || silver <= 0) {
+      Alert.alert('Rates required', 'Gold and silver rates should be greater than 0.');
       return;
     }
 
     const cleanRateDate = dateInputToIso(rateDate);
     const updated = await upsertRate(db, {
-      silver1kgRate: silver,
+      gold10gRate: gold,
       rateDate: cleanRateDate,
+      silver1kgRate: silver,
     });
     setLatestRate(updated);
     setRateDate(cleanRateDate);
-    void triggerBackgroundUpload();
-    setSyncMessage('Rates saved. Background sync active.');
+    const result = await runOnlineSync(false);
+    setSyncMessage(result.ok ? 'Rates saved. Data updated online.' : 'Rates saved. Internet update pending.');
   }
 
   async function handleCreateItemName(name: string, material: MetalType) {
@@ -2788,9 +2760,9 @@ function JewelleryBillBook() {
 
     try {
       await createItemName(db, cleanName, material);
-      void triggerBackgroundUpload();
+      const result = await runOnlineSync(false);
       await refreshScreen();
-      setSyncMessage('Item name saved. Background sync active.');
+      setSyncMessage(result.ok ? 'Item name saved. Data updated online.' : 'Item name saved. Internet update pending.');
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Item name save nahi hua.';
@@ -2807,26 +2779,14 @@ function JewelleryBillBook() {
 
     try {
       const savedParty = await saveCustomer(db, draft);
-      void triggerBackgroundUpload();
+      const result = await runOnlineSync(false);
       await refreshScreen();
-      setSyncMessage('Party saved. Background sync active.');
+      setSyncMessage(result.ok ? 'Party saved. Data updated online.' : 'Party saved. Internet update pending.');
       return savedParty;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Party save nahi hui.';
       Alert.alert('Party failed', message);
       return false;
-    }
-  }
-
-  async function handleDeleteParty(customerId: string) {
-    try {
-      await deletePartyWithBills(db, customerId);
-      await refreshScreen();
-      setScreen('parties');
-      setSyncMessage('Party deleted.');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Delete failed.';
-      Alert.alert('Delete failed', message);
     }
   }
 
@@ -2837,19 +2797,7 @@ function JewelleryBillBook() {
     }
 
     try {
-      const supplier = await saveSupplierManualEntry(db, {
-        id: createId(),
-        entryDate: dateInputToIso(draft.entryDate),
-        name: draft.name,
-        mobile: draft.mobile,
-        address: draft.address,
-        openingFinePayable: parseAmount(draft.openingFinePayable),
-        openingAmountPayable: parseAmount(draft.openingAmountPayable),
-        openingNote: draft.openingNote,
-        createdAt: '',
-        updatedAt: '',
-        syncStatus: 'pending' as SyncStatus,
-      });
+      const supplier = await saveSupplierManualEntry(db, { ...draft, entryDate: dateInputToIso(draft.entryDate) });
       setSupplierAccounts((current) => {
         const next = current.filter((entry) => entry.id !== supplier.id);
         return [supplier, ...next];
@@ -2882,8 +2830,8 @@ function JewelleryBillBook() {
         try {
           await refreshScreen();
           try {
-            void triggerBackgroundUpload();
-            setSyncMessage('Supplier saved. Background sync active.');
+            const result = await runOnlineSync(false);
+            setSyncMessage(result.ok ? 'Supplier saved. Data updated online.' : 'Supplier saved. Internet update pending.');
           } catch {
             setSyncMessage('Supplier saved locally. Internet update pending.');
           }
@@ -2909,10 +2857,10 @@ function JewelleryBillBook() {
     const cashAmount = input.mode === 'cash_payment' || input.mode === 'split_payment' ? parseAmount(input.cashAmount) : 0;
     const bankAmount = input.mode === 'bank_payment' || input.mode === 'split_payment' ? parseAmount(input.bankAmount) : 0;
     const fineWeight = input.mode === 'purchase' || input.mode === 'metal_paid' ? parseAmount(input.fineWeight) : 0;
-    const discountValue = parseAmount(input.discountAmount);
+    const discountValue = input.mode === 'discount' ? parseAmount(input.discountAmount) : 0;
 
-    if (cashAmount <= 0 && bankAmount <= 0 && fineWeight <= 0) {
-      Alert.alert('Entry required', 'Cash, bank ya metal me value daalo.');
+    if (cashAmount <= 0 && bankAmount <= 0 && fineWeight <= 0 && discountValue <= 0) {
+      Alert.alert('Entry required', 'Cash, bank, metal ya discount me value daalo.');
       return false;
     }
 
@@ -2932,8 +2880,8 @@ function JewelleryBillBook() {
       await refreshScreen();
       await loadSupplierTransactions(supplier.id);
       try {
-        void triggerBackgroundUpload();
-        setSyncMessage('Supplier transaction saved. Background sync active.');
+        const result = await runOnlineSync(false);
+        setSyncMessage(result.ok ? 'Supplier transaction saved. Data updated online.' : 'Supplier transaction saved. Internet update pending.');
       } catch {
         setSyncMessage('Supplier transaction saved locally. Internet update pending.');
       }
@@ -2963,8 +2911,8 @@ function JewelleryBillBook() {
       });
       await refreshScreen();
       try {
-        void triggerBackgroundUpload();
-        setSyncMessage('Ledger entry saved. Background sync active.');
+        const result = await runOnlineSync(false);
+        setSyncMessage(result.ok ? 'Ledger entry saved. Data updated online.' : 'Ledger entry saved. Internet update pending.');
       } catch {
         setSyncMessage('Ledger entry saved locally. Internet update pending.');
       }
@@ -3000,7 +2948,7 @@ function JewelleryBillBook() {
       autoRoundFigure: false,
       finalAmountOverride: '',
       receiptType: 'none',
-      receiptMaterial: 'silver',
+      receiptMaterial: 'gold',
       receivedGrossWeight: '',
       receivedTouch: '',
       receivedFine: '',
@@ -3031,6 +2979,7 @@ function JewelleryBillBook() {
       height: size.height,
       width: size.width,
       margins: { bottom: 0, left: 0, right: 0, top: 0 },
+      textZoom: 100,
     });
     const ExpoFile = FileSystem.File as unknown as new (...uris: unknown[]) => ExpoFsFile;
     const sourceFile = new ExpoFile(uri);
@@ -3057,21 +3006,21 @@ function JewelleryBillBook() {
       return false;
     }
 
-    const cashAmount = input.mode === 'cash' || input.mode === 'split' || input.mode === 'fine' ? parseAmount(input.cashAmount) : 0;
+    const cashAmount = input.mode === 'cash' || input.mode === 'split' ? parseAmount(input.cashAmount) : 0;
     const bankAmount = input.mode === 'bank' || input.mode === 'split' ? parseAmount(input.bankAmount) : 0;
-    const fineWeight = input.mode === 'fine' || input.mode === 'fine_rec' || input.mode === 'split' ? parseAmount(input.fineWeight) : 0;
+    const fineWeight = input.mode === 'fine' ? parseAmount(input.fineWeight) : 0;
     const paymentAmount = input.mode === 'payment' ? parseAmount(input.paymentAmount) : 0;
-    const discountValue = parseAmount(input.discountAmount);
+    const discountValue = input.mode === 'discount' ? parseAmount(input.discountAmount) : 0;
 
-    if (cashAmount <= 0 && bankAmount <= 0 && fineWeight <= 0 && paymentAmount <= 0) {
-      Alert.alert('Entry required', 'Cash, bank, fine ya payment me value daalo.');
+    if (cashAmount <= 0 && bankAmount <= 0 && fineWeight <= 0 && paymentAmount <= 0 && discountValue <= 0) {
+      Alert.alert('Entry required', 'Cash, bank, fine, payment ya discount me value daalo.');
       return false;
     }
 
     try {
       const transaction = await createPartyTransaction(db, {
         bankAmount,
-        bookedRate: input.mode === 'fine' || input.mode === 'split' ? input.bookedRate : 0,
+        bookedRate: input.mode === 'fine' ? input.bookedRate : 0,
         cashAmount,
         customerId: party.customerId,
         discountAmount: discountValue,
@@ -3082,10 +3031,10 @@ function JewelleryBillBook() {
         paymentAmount,
         transactionDate: dateInputToIso(input.transactionDate),
       });
-      void triggerBackgroundUpload();
+      const result = await runOnlineSync(false);
       await refreshScreen();
       await loadPartyTransactions(party.customerId);
-      setSyncMessage('Party transaction saved. Background sync active.');
+      setSyncMessage(result.ok ? 'Party transaction saved. Data updated online.' : 'Party transaction saved. Internet update pending.');
       return transaction;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Party transaction save nahi hua.';
@@ -3094,7 +3043,7 @@ function JewelleryBillBook() {
     }
   }
 
-  async function handleSharePartyVoucher(transaction: PartyTransaction, target: 'customer' | 'pdf') {
+  async function handleSharePartyVoucher(transaction: PartyTransaction) {
     const party = selectedPartyFolder;
     if (!party) {
       Alert.alert('Party missing', 'Pehle party open karo.');
@@ -3102,22 +3051,9 @@ function JewelleryBillBook() {
     }
 
     try {
-      if (target === 'customer') {
-        const mobile = party.customerMobile?.replace(/[^0-9]/g, '');
-        if (mobile) {
-          const url = `https://wa.me/91${mobile}?text=Check%20voucher%20%23${transaction.voucherNo}`;
-          const supported = await Linking.canOpenURL(url);
-          if (supported) {
-            await Linking.openURL(url);
-            return;
-          }
-        }
-        await sharePartyVoucherPdf(party, transaction);
-      } else {
-        await sharePartyVoucherPdf(party, transaction);
-      }
+      await sharePartyVoucherPdf(party, transaction);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Voucher share nahi hua.';
+      const message = error instanceof Error ? error.message : 'Voucher PDF share nahi hua.';
       Alert.alert('Voucher failed', message);
     }
   }
@@ -3202,10 +3138,12 @@ function JewelleryBillBook() {
       setClearCustomTo(savedPayload.billDate);
       const reminderMessage = savedReminder ? ` Reminder ${formatDateTime(savedReminder.dueAt)} set.` : '';
       setSyncMessage(`Bill ${savedPayload.billNo} ${editingBillId ? 'updated' : 'saved'}. ${bookStatusMessage}${reminderMessage}`);
-      void triggerBackgroundUpload();
+      const syncResult = await runOnlineSync(false);
       resetBillDraft();
       setScreen('home');
-      const saveMessage = `Bill ${savedPayload.billNo} ${editingBillId ? 'updated' : 'saved'}. ${bookStatusMessage}${reminderMessage} Background sync active.`;
+      const saveMessage = `Bill ${savedPayload.billNo} ${editingBillId ? 'updated' : 'saved'}. ${bookStatusMessage}${reminderMessage} ${
+        syncResult.ok ? 'Data updated online.' : 'Internet update pending.'
+      }`;
       setSharePromptPayload(savedPayload);
       setSharePromptMessage(saveMessage);
     } catch (error) {
@@ -3267,49 +3205,6 @@ function JewelleryBillBook() {
     }
   }
 
-  async function handleConvertToEstimate(billPayload: BillPayload, returnedItems?: JangadReturnItem[]) {
-    const remaining = returnedItems?.length
-      ? billPayload.items.reduce<BillItemDraft[]>((acc, item) => {
-          const returnedQty = returnedItems
-            .filter((r) => r.itemName === item.itemName)
-            .reduce((sum, r) => sum + r.pcs, 0);
-          const remainingPcs = Math.max((parseInt(item.pcs) || 0) - returnedQty, 0);
-          if (remainingPcs <= 0) return acc;
-          const remainingWeight = (parseFloat(item.weight) || 0) * (remainingPcs / (parseInt(item.pcs) || 1));
-          acc.push({
-            ...item,
-            pcs: String(remainingPcs),
-            weight: formatCalcValue(remainingWeight, 3),
-            fine: '',
-            labour: '',
-            touch: '',
-            rate: '',
-            amount: '',
-            labourType: 'gw',
-          });
-          return acc;
-        }, [])
-      : billPayload.items.map((item) => ({
-          ...item,
-          amount: item.amount || '',
-          fine: item.fine || '',
-          labour: item.labour || '',
-          labourType: 'gw' as const,
-          rate: item.rate || '',
-          touch: item.touch || '',
-        }));
-    if (!remaining.length) { Alert.alert('No items', 'Convert karne ke liye koi item nahi bache.'); return; }
-    resetBillDraft();
-    setCustomer(billPayload.customer);
-    setItems(remaining);
-    setBillDate(localIsoDate());
-    const nextNo = await getNextBillNo(db, 'estimate');
-    setBillNo(nextNo);
-    setBillType('estimate');
-    setEditingBillId(null);
-    setScreen('bill');
-  }
-
   async function handleOpenBill(id: string) {
     const [payload, transactions] = await Promise.all([getBillPayload(db, id), getBillTransactions(db, id)]);
     if (!payload) {
@@ -3321,11 +3216,6 @@ function JewelleryBillBook() {
     setViewingBillPayload(payload);
     setViewingBillTransactions(transactions);
     setLastSavedPayload(payload);
-    if (payload.billType === 'jangad') {
-      getReturnsForBill(db, id).then(setViewingBillReturns);
-    } else {
-      setViewingBillReturns([]);
-    }
     setBillViewBackScreen(screen === 'partyBills' ? 'partyBills' : screen === 'clearBooks' ? 'clearBooks' : 'bills');
     setScreen('billView');
   }
@@ -3360,10 +3250,14 @@ function JewelleryBillBook() {
       transactionDate: dateInputToIso(input.transactionDate),
     });
 
-    void triggerBackgroundUpload();
+    const syncResult = await runOnlineSync(false);
     const transactions = await getBillTransactions(db, viewingBillId);
     setViewingBillTransactions(transactions);
-    setSyncMessage('Bill transaction saved. Background sync active.');
+    setSyncMessage(
+      syncResult.ok
+        ? 'Bill transaction saved. Data updated online.'
+        : 'Bill transaction saved. Internet update pending.',
+    );
   }
 
   async function handleEditBill(id: string) {
@@ -3379,9 +3273,8 @@ function JewelleryBillBook() {
     setBillType(payload.billType);
     setLanguage(payload.language);
     setCustomer(payload.customer);
-    const loadedItems = payload.items.length ? payload.items.map((item) => autoCalculateItem(item, rates)) : [emptyItem('silver')];
+    const loadedItems = payload.items.length ? payload.items.map((item) => autoCalculateItem(item, rates)) : [emptyItem('gold')];
     setItems(loadedItems);
-    setBillNote(payload.note ?? '');
     setReceiptType(payload.receiptType);
     setReceiptMaterial(payload.receiptMaterial);
     setReceivedGrossWeight(payload.receivedGrossWeight);
@@ -3420,16 +3313,23 @@ function JewelleryBillBook() {
 
   async function handleMarkEntered(id: string) {
     await markBillEntered(db, id);
-    void triggerBackgroundUpload();
-    setSyncMessage('Book entry clear marked. Background sync active.');
+    const result = await runOnlineSync(false);
+    setSyncMessage(
+      result.ok
+        ? 'Book entry clear marked. Data updated online.'
+        : 'Book entry clear marked. Internet update pending.',
+    );
   }
 
   async function handleCreateBackup() {
     try {
       if (Platform.OS === 'web') {
-        void triggerBackgroundUpload();
-        setBackupMessage('Supabase backup initiated. Background sync active.');
-        Alert.alert('Backup initiated', 'Data will be synced to Supabase in background.');
+        const result = await runOnlineSync(false);
+        const message = result.ok
+          ? 'Supabase backup complete. PWA data online saved.'
+          : 'Supabase backup failed. Internet/Supabase pending.';
+        setBackupMessage(message);
+        Alert.alert(result.ok ? 'Supabase backup complete' : 'Backup pending', message);
         return;
       }
 
@@ -3457,8 +3357,8 @@ function JewelleryBillBook() {
 
     const result = await restoreBackupData(db, backupData);
     await refreshScreen();
-    void triggerBackgroundUpload();
-    const message = `${backupCountLine(result)} Background sync active.`;
+    const syncResult = await runOnlineSync(false);
+    const message = `${backupCountLine(result)} ${syncResult.ok ? 'Data updated online.' : 'Internet update pending.'}`;
     setBackupMessage(`${sourceLabel}: ${message}`);
     Alert.alert('Restore complete', message);
   }
@@ -3504,9 +3404,9 @@ function JewelleryBillBook() {
       if (notificationId) {
         await setBillReminderNotificationId(db, updated.id, notificationId);
       }
-      void triggerBackgroundUpload();
+      const result = await runOnlineSync(false);
       await refreshScreen();
-      setSyncMessage('Reminder extended. Background sync active.');
+      setSyncMessage(result.ok ? 'Reminder extended. Data updated online.' : 'Reminder extended. Internet update pending.');
     } catch (error) {
       Alert.alert('Reminder failed', error instanceof Error ? error.message : 'Reminder update nahi hua.');
     }
@@ -3516,9 +3416,9 @@ function JewelleryBillBook() {
     try {
       await cancelScheduledReminderNotification(reminder.notificationId);
       await markBillReminderDone(db, reminder.id);
-      void triggerBackgroundUpload();
+      const result = await runOnlineSync(false);
       await refreshScreen();
-      setSyncMessage('Reminder done marked. Background sync active.');
+      setSyncMessage(result.ok ? 'Reminder done marked. Data updated online.' : 'Reminder done marked. Internet update pending.');
     } catch (error) {
       Alert.alert('Reminder failed', error instanceof Error ? error.message : 'Reminder done nahi hua.');
     }
@@ -3534,15 +3434,17 @@ function JewelleryBillBook() {
       const cleanMarketDate = dateInputToIso(marketDate);
       const existingRun = marketStockRows.find((row) => row.runDate === cleanMarketDate);
       await upsertMarketRun(db, {
-        silverWeight: marketSilverWeight.trim() ? parseAmount(marketSilverWeight) * 1000 : existingRun?.silverWeight ?? 0,
+        goldWeight: marketGoldWeight.trim() ? marketGoldWeight : existingRun?.goldWeight ?? 0,
         note: marketNote.trim() || existingRun?.note || '',
         runDate: cleanMarketDate,
+        silverWeight: marketSilverWeight.trim() ? parseAmount(marketSilverWeight) * 1000 : existingRun?.silverWeight ?? 0,
       });
-      void triggerBackgroundUpload();
+      const result = await runOnlineSync(false);
       await refreshScreen();
+      setMarketGoldWeight('');
       setMarketSilverWeight('');
       setMarketNote('');
-      setSyncMessage('Market stock saved. Background sync active.');
+      setSyncMessage(result.ok ? 'Market stock saved. Data updated online.' : 'Market stock saved. Internet update pending.');
     } catch (error) {
       Alert.alert('Market stock failed', error instanceof Error ? error.message : 'Market stock save nahi hua.');
     }
@@ -3554,24 +3456,33 @@ function JewelleryBillBook() {
       {screen === 'home' ? (
         <NewHomeScreen
           allBills={allBills}
+          backupMessage={backupMessage}
+          billReminders={billReminders}
+          goldRate={goldRate}
           language={language}
+          marketStockRows={marketStockRows}
           onBackup={() => setScreen('backup')}
           onBills={() => setScreen('bills')}
+          onClearBooks={() => setScreen('clearBooks')}
           onItemNames={() => setScreen('itemNames')}
+          onMarketStock={() => setScreen('marketStock')}
           onNewBill={startBlankBill}
           onParties={() => setScreen('parties')}
-          onJangadBook={startJangadBill}
+          onRateEdit={() => setScreen('rates')}
           onReminders={() => setScreen('reminders')}
           onSuppliers={() => setScreen('suppliers')}
           onCashLedger={() => setScreen('cashLedger')}
           onBankLedger={() => setScreen('bankLedger')}
           partyLedgers={partyLedgers}
+          silverRate={silverRate}
         />
       ) : null}
       {screen === 'rates' ? (
         <RatesScreen
+          goldRate={goldRate}
           isSyncing={isSyncing}
           onBack={() => setScreen('home')}
+          onGoldRateChange={setGoldRate}
           onRateDateChange={setRateDate}
           onSaveRates={handleSaveRates}
           onSilverRateChange={setSilverRate}
@@ -3603,18 +3514,7 @@ function JewelleryBillBook() {
           onCreateForParty={startPartyBill}
           onOpenBill={handleOpenBill}
           onOpenTransact={() => setScreen('partyTransact')}
-          onOpenVouchers={() => setScreen('partyVouchers')}
           onShareBill={handleShareExistingBill}
-          onDeleteParty={handleDeleteParty}
-          partyFolder={selectedPartyFolder}
-          partyLedger={selectedPartyLedger}
-        />
-      ) : null}
-      {screen === 'partyVouchers' && selectedPartyFolder ? (
-        <PartyVouchersScreen
-          onBack={() => setScreen('partyBills')}
-          onShareVoucher={handleSharePartyVoucher}
-          onOpenTransact={() => setScreen('partyTransact')}
           partyFolder={selectedPartyFolder}
           partyLedger={selectedPartyLedger}
           transactions={selectedPartyTransactions}
@@ -3622,7 +3522,7 @@ function JewelleryBillBook() {
       ) : null}
       {screen === 'partyTransact' && selectedPartyFolder ? (
         <PartyTransactScreen
-          onBack={() => setScreen('partyVouchers')}
+          onBack={() => setScreen('partyBills')}
           onSavePartyTransaction={handleSavePartyTransaction}
           onShareVoucher={handleSharePartyVoucher}
           partyFolder={selectedPartyFolder}
@@ -3743,28 +3643,16 @@ function JewelleryBillBook() {
       {screen === 'marketStock' ? (
         <MarketStockScreen
           marketDate={marketDate}
-          marketSilverWeight={marketSilverWeight}
+          marketGoldWeight={marketGoldWeight}
           marketNote={marketNote}
+          marketSilverWeight={marketSilverWeight}
           rows={marketStockRows}
           onBack={() => setScreen('home')}
           onDateChange={setMarketDate}
+          onGoldWeightChange={setMarketGoldWeight}
           onNoteChange={setMarketNote}
           onSave={handleSaveMarketRun}
           onSilverWeightChange={setMarketSilverWeight}
-        />
-      ) : null}
-      {screen === 'jangadBook' ? (
-        <JangadBookScreen
-          onBack={() => setScreen(prevScreenRef.current === 'bill' ? 'bill' : 'home')}
-          onOpenBill={handleOpenBill}
-          onNewJangadBill={startJangadBill}
-          onConvertRemaining={async (billId) => {
-            const payload = await getBillPayload(db, billId);
-            if (!payload) return;
-            const returns = await getReturnsForBill(db, billId);
-            const allReturnItems = returns.flatMap((r) => r.items);
-            await handleConvertToEstimate(payload, allReturnItems);
-          }}
         />
       ) : null}
       {screen === 'itemNames' ? (
@@ -3779,7 +3667,6 @@ function JewelleryBillBook() {
           billId={viewingBillId}
           payload={viewingBillPayload}
           transactions={viewingBillTransactions}
-          returns={viewingBillReturns}
           onBack={() => setScreen(billViewBackScreen)}
           onEditBill={handleEditBill}
           onSaveTransaction={handleSaveBillTransaction}
@@ -3793,7 +3680,6 @@ function JewelleryBillBook() {
               void handleShareExistingBill(viewingBillId, 'other');
             }
           }}
-          onConvertToEstimate={(p) => { void handleConvertToEstimate(p); }}
         />
       ) : null}
       {screen === 'bill' ? (
@@ -3806,12 +3692,12 @@ function JewelleryBillBook() {
           discountAmount={discountAmount}
           discountInputValue={resolvedDiscountInput}
           draftItems={items}
-          
+          goldRate={goldRate}
           isSaving={isSaving}
           itemNameOptions={itemNameOptions}
           language={language}
           lastSavedPayload={lastSavedPayload}
-          onAddItem={() => setItems((current) => [...current, emptyItem(current[current.length - 1]?.material ?? 'silver')])}
+          onAddItem={() => setItems((current) => [...current, emptyItem(current[current.length - 1]?.material ?? 'gold')])}
           onBack={() => setScreen('home')}
           onBillDateChange={setBillDate}
           onBillNoChange={(value) => setBillNo(Number(value) || 0)}
@@ -3819,10 +3705,9 @@ function JewelleryBillBook() {
           onAutoRoundFigureChange={updateAutoRoundFigure}
           onFinalAmountOverrideChange={updateFinalAmountOverride}
           onItemChange={updateItem}
-          onSilverRateChange={updateBillSilverRate}
           onCreateItemName={handleCreateItemName}
           onLanguageChange={setLanguage}
-          
+          onGoldRateChange={updateBillGoldRate}
           onReceiptCashChange={updateReceivedCash}
           onReceiptGrossWeightChange={updateReceivedGrossWeight}
           onReceiptMaterialChange={updateReceiptMaterial}
@@ -3840,12 +3725,9 @@ function JewelleryBillBook() {
           onSelectPartySuggestion={selectPartyForBill}
           onShareSaved={handleSharePdf}
           onShareSavedToCustomer={handleShareSavedToCustomer}
-          onJangadReturn={() => setScreen('jangadBook')}
-          onNoteChange={setBillNote}
-          
+          onSilverRateChange={updateBillSilverRate}
           partyFolders={partyFolders}
           rates={rates}
-          silverRate={silverRate}
           receiptMaterial={receiptMaterial}
           receiptType={receiptType}
           rateCutAmount={rateCutAmount}
@@ -3861,7 +3743,7 @@ function JewelleryBillBook() {
           finalAmountOverride={finalAmountOverride}
           receivedGrossWeight={receivedGrossWeight}
           receivedTouch={receivedTouch}
-          
+          silverRate={silverRate}
           totals={totals}
         />
       ) : null}
@@ -3986,15 +3868,409 @@ function ShareChoicePrompt({
   );
 }
 
+function HomeScreen({
+  allBills,
+  backupMessage,
+  billReminders,
+  goldRate,
+  language,
+  marketStockRows,
+  onBackup,
+  onBills,
+  onClearBooks,
+  onItemNames,
+  onMarketStock,
+  onNewBill,
+  onParties,
+  onRateEdit,
+  onReminders,
+  onSuppliers,
+  onCashLedger,
+  onBankLedger,
+  partyLedgers,
+  silverRate,
+}: {
+  allBills: RecentBill[];
+  backupMessage: string;
+  billReminders: BillReminder[];
+  goldRate: string;
+  language: Language;
+  marketStockRows: MarketStockSummary[];
+  onBackup: () => void;
+  onBills: () => void;
+  onClearBooks: () => void;
+  onItemNames: () => void;
+  onMarketStock: () => void;
+  onNewBill: () => void;
+  onParties: () => void;
+  onRateEdit: () => void;
+  onReminders: () => void;
+  onSuppliers: () => void;
+  onCashLedger: () => void;
+  onBankLedger: () => void;
+  partyLedgers: PartyLedgerSummary[];
+  silverRate: string;
+}) {
+  const todayBills = allBills.filter((bill) => isBillInPeriod(bill.billDate, 'today', '', ''));
+  const weekBills = allBills.filter((bill) => isBillInPeriod(bill.billDate, 'week', '', ''));
+  const monthBills = allBills.filter((bill) => isBillInPeriod(bill.billDate, 'month', '', ''));
+  const pendingBills = allBills.filter((bill) => bill.entryStatus === 'pending');
+  const activeReminders = billReminders.filter((reminder) => reminder.status === 'active');
+  const dueReminders = activeReminders.filter(reminderIsDue);
+  const todayMarket = marketStockRows.find((row) => row.runDate === localIsoDate());
+  const todayAmount = todayBills.reduce((sum, bill) => sum + bill.netTotal, 0);
+  const monthAmount = monthBills.reduce((sum, bill) => sum + bill.netTotal, 0);
+  const fineDue = partyLedgers.reduce((sum, ledger) => sum + ledger.fineBalance, 0);
+  const labourDue = partyLedgers.reduce((sum, ledger) => sum + ledger.labourBalance, 0);
 
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <View style={styles.homeHero}>
+        <View style={styles.heroTop}>
+          <View style={styles.heroBrand}>
+            <BrandLogo size={36} />
+            <View style={styles.heroCopy}>
+              <Text style={styles.appTitle}>{SHOP.name}</Text>
+              <Text style={styles.heroTitle}>{t(language, 'heroTitle')}</Text>
+              <Text style={styles.heroSubtitle}>Rate cards tap karke aaj ka gold/silver rate update karo.</Text>
+            </View>
+          </View>
+        </View>
+        <View style={styles.rateTiles}>
+          <Pressable onPress={onRateEdit} style={styles.rateTile}>
+            <Text style={styles.rateLabel}>Gold</Text>
+            <Text style={styles.rateValue}>{formatMoney(goldRate)}</Text>
+            <Text style={styles.rateMetric}>10 gram | tap to edit</Text>
+          </Pressable>
+          <Pressable onPress={onRateEdit} style={[styles.rateTile, styles.silverRateTile]}>
+            <Text style={styles.rateLabel}>Silver</Text>
+            <Text style={styles.rateValue}>{formatMoney(silverRate)}</Text>
+            <Text style={styles.rateMetric}>1 kg | tap to edit</Text>
+          </Pressable>
+        </View>
+      </View>
 
+      <Section title="Bills summary" />
+      <View style={styles.summaryGrid}>
+        <SummaryTile label="Today's bills" value={`${todayBills.length} | ${formatMoney(todayAmount)}`} />
+        <SummaryTile label="Weekly bills" value={String(weekBills.length)} />
+        <SummaryTile label="Monthly amount" value={formatMoney(monthAmount)} />
+        <SummaryTile label="Books me clear baki" value={String(pendingBills.length)} />
+        <SummaryTile label="Party fine due" value={gmText(fineDue)} />
+        <SummaryTile label="Party amount due" value={formatMoney(labourDue)} />
+        <SummaryTile label="Fine reminders" value={`${dueReminders.length} due | ${activeReminders.length} active`} />
+        <SummaryTile
+          label="Market balance"
+          value={todayMarket ? `G ${gmText(todayMarket.goldRemaining)} | S ${kgTextFromGm(todayMarket.silverRemaining)}` : 'No stock today'}
+        />
+      </View>
 
+      <Section title="Actions" />
+      <View style={styles.homeActionGrid}>
+        <Pressable onPress={onNewBill} style={[styles.homeActionButton, styles.primaryActionButton]}>
+          <Text style={styles.homeActionTitle}>Create bill</Text>
+          <Text style={styles.homeActionMeta}>Estimate bill book</Text>
+        </Pressable>
+        <Pressable onPress={onParties} style={styles.homeActionButton}>
+          <Text style={styles.homeActionTitle}>Parties</Text>
+          <Text style={styles.homeActionMeta}>Party folders and bill history</Text>
+        </Pressable>
+        <Pressable onPress={onBills} style={styles.homeActionButton}>
+          <Text style={styles.homeActionTitle}>Bills</Text>
+          <Text style={styles.homeActionMeta}>Today, week, month, custom</Text>
+        </Pressable>
+        <Pressable onPress={onClearBooks} style={styles.homeActionButton}>
+          <Text style={styles.homeActionTitle}>Bill to clear in books</Text>
+          <Text style={styles.homeActionMeta}>{pendingBills.length} pending entries</Text>
+        </Pressable>
+        <Pressable onPress={onItemNames} style={styles.homeActionButton}>
+          <Text style={styles.homeActionTitle}>Item names</Text>
+          <Text style={styles.homeActionMeta}>Create and select item names</Text>
+        </Pressable>
+        <Pressable onPress={onReminders} style={styles.homeActionButton}>
+          <Text style={styles.homeActionTitle}>Fine reminders</Text>
+          <Text style={styles.homeActionMeta}>{dueReminders.length} due reminders</Text>
+        </Pressable>
+        <Pressable onPress={onSuppliers} style={styles.homeActionButton}>
+          <Text style={styles.homeActionTitle}>Suppliers</Text>
+          <Text style={styles.homeActionMeta}>Purchase creditor ledger</Text>
+        </Pressable>
+        <Pressable onPress={onCashLedger} style={styles.homeActionButton}>
+          <Text style={styles.homeActionTitle}>Cash ledger</Text>
+          <Text style={styles.homeActionMeta}>Day, week, month, year view</Text>
+        </Pressable>
+        <Pressable onPress={onBankLedger} style={styles.homeActionButton}>
+          <Text style={styles.homeActionTitle}>Bank ledger</Text>
+          <Text style={styles.homeActionMeta}>Receipts and payments</Text>
+        </Pressable>
+        <Pressable onPress={onMarketStock} style={styles.homeActionButton}>
+          <Text style={styles.homeActionTitle}>Market stock</Text>
+          <Text style={styles.homeActionMeta}>Daily carried vs bill sold</Text>
+        </Pressable>
+        <Pressable onPress={onBackup} style={styles.homeActionButton}>
+          <Text style={styles.homeActionTitle}>Backup / restore</Text>
+          <Text style={styles.homeActionMeta}>{backupMessage || 'Data backup and restore'}</Text>
+        </Pressable>
+      </View>
+    </ScrollView>
+  );
+}
+
+function OldHomeScreen({
+  billPeriod,
+  customFrom,
+  customTo,
+  filteredBills,
+  goldRate,
+  isSyncing,
+  language,
+  lastSavedPayload,
+  latestRate,
+  onCustomFromChange,
+  onCustomToChange,
+  onGoldRateChange,
+  onMarkEntered,
+  onNewBill,
+  onPeriodChange,
+  onRateDateChange,
+  onSaveRates,
+  onSelectParty,
+  onShareBill,
+  onShareSavedOther,
+  onShareSavedToCustomer,
+  onSilverRateChange,
+  onSync,
+  partyFolders,
+  rateDate,
+  recentBills,
+  silverRate,
+  syncMessage,
+}: {
+  billPeriod: BillPeriod;
+  customFrom: string;
+  customTo: string;
+  filteredBills: RecentBill[];
+  goldRate: string;
+  isSyncing: boolean;
+  language: Language;
+  lastSavedPayload: BillPayload | null;
+  latestRate: Rate | null;
+  onCustomFromChange: (value: string) => void;
+  onCustomToChange: (value: string) => void;
+  onGoldRateChange: (value: string) => void;
+  onMarkEntered: (id: string) => void;
+  onNewBill: () => void;
+  onPeriodChange: (value: BillPeriod) => void;
+  onRateDateChange: (value: string) => void;
+  onSaveRates: () => void;
+  onSelectParty: (folder: PartyFolder) => void;
+  onShareBill: (id: string, target: 'customer' | 'other') => void;
+  onShareSavedOther: () => void;
+  onShareSavedToCustomer: () => void;
+  onSilverRateChange: (value: string) => void;
+  onSync: () => void;
+  partyFolders: PartyFolder[];
+  rateDate: string;
+  recentBills: RecentBill[];
+  silverRate: string;
+  syncMessage: string;
+}) {
+  const pendingBills = filteredBills.filter((bill) => bill.entryStatus === 'pending');
+  const enteredBills = filteredBills.filter((bill) => bill.entryStatus === 'entered');
+  const totalAmount = filteredBills.reduce((sum, bill) => sum + bill.netTotal, 0);
+  const pendingAmount = pendingBills.reduce((sum, bill) => sum + bill.netTotal, 0);
+
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <RateHero goldRate={goldRate} language={language} latestRate={latestRate} silverRate={silverRate} />
+
+      <View style={styles.actionBar}>
+        <Pressable onPress={onNewBill} style={styles.button}>
+          <Text style={styles.buttonText}>New bill</Text>
+        </Pressable>
+        <Pressable disabled={isSyncing} onPress={onSync} style={[styles.button, styles.secondaryButton]}>
+          <Text style={styles.secondaryButtonText}>{isSyncing ? 'Syncing...' : t(language, 'syncNow')}</Text>
+        </Pressable>
+      </View>
+      <Text style={styles.syncMessage}>{syncMessage}</Text>
+
+      {lastSavedPayload ? (
+        <View style={styles.sharePanel}>
+          <View style={styles.heroCopy}>
+            <Text style={styles.sharePanelTitle}>Bill #{lastSavedPayload.billNo} saved</Text>
+            <Text style={styles.sharePanelMeta}>
+              {lastSavedPayload.customer.name || 'Customer'} | {formatMoney(lastSavedPayload.netTotal)}
+            </Text>
+          </View>
+          <View style={styles.rowActions}>
+            <Pressable onPress={onShareSavedToCustomer} style={[styles.smallButton, styles.customerShareButton]}>
+              <Text style={styles.smallButtonText}>Customer</Text>
+            </Pressable>
+            <Pressable onPress={onShareSavedOther} style={styles.smallButton}>
+              <Text style={styles.smallButtonText}>Other</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      <Section title="Rate update" />
+      <View style={styles.panel}>
+        <View style={styles.formGrid}>
+          <DateField label={t(language, 'rateDate')} value={rateDate} onChangeText={onRateDateChange} />
+          <Field keyboardType="numeric" label="Gold 10g" value={goldRate} onChangeText={onGoldRateChange} />
+          <Field keyboardType="numeric" label="Silver 1kg" value={silverRate} onChangeText={onSilverRateChange} />
+        </View>
+        <Pressable onPress={onSaveRates} style={styles.button}>
+          <Text style={styles.buttonText}>{t(language, 'saveRates')}</Text>
+        </Pressable>
+      </View>
+
+      <Section title="Bills" />
+      <View style={styles.panel}>
+        <View style={styles.segmentBlock}>
+          <Text style={styles.fieldLabel}>Bill period</Text>
+          <BillPeriodSelector period={billPeriod} onChange={onPeriodChange} />
+        </View>
+        {billPeriod === 'custom' ? (
+          <View style={[styles.formGrid, styles.customDateGrid]}>
+              <DateField label="From" value={customFrom} onChangeText={onCustomFromChange} />
+              <DateField label="To" value={customTo} onChangeText={onCustomToChange} />
+          </View>
+        ) : null}
+        <View style={styles.summaryGrid}>
+          <SummaryTile label="Bills" value={String(filteredBills.length)} />
+          <SummaryTile label="Amount" value={formatMoney(totalAmount)} />
+          <SummaryTile label="Pending entry" value={`${pendingBills.length} | ${formatMoney(pendingAmount)}`} />
+          <SummaryTile label="Clear" value={String(enteredBills.length)} />
+        </View>
+      </View>
+      <Text style={styles.sectionHelp}>Party folder bill save hote hi auto banega. Next bill ke liye folder select karo.</Text>
+      <View style={styles.folderGrid}>
+        {partyFolders.length ? (
+          partyFolders.map((folder) => (
+            <Pressable key={folder.customerId} onPress={() => onSelectParty(folder)} style={styles.folderCard}>
+              <View style={styles.folderIcon}>
+                <Text style={styles.folderIconText}>B</Text>
+              </View>
+              <View style={styles.folderBody}>
+                <Text style={styles.folderName}>{folder.customerName}</Text>
+                <Text style={styles.folderMeta}>
+                  {folder.billCount} bills | Last {formatDateForBill(folder.lastBillDate)}
+                </Text>
+                <Text style={styles.folderMeta}>{folder.customerMobile || 'No mobile'}</Text>
+              </View>
+              <Text style={styles.folderAmount}>{formatMoney(folder.totalAmount)}</Text>
+            </Pressable>
+          ))
+        ) : (
+          <View style={styles.emptyPanel}>
+            <Text style={styles.emptyText}>No party folders yet. Create first bill to start folders.</Text>
+          </View>
+        )}
+      </View>
+
+      <Section title="Office pending entry" />
+      <View style={styles.recentList}>
+        {pendingBills.length ? (
+          pendingBills.map((bill) => (
+            <View key={bill.id} style={styles.pendingRow}>
+              <View style={styles.pendingInfo}>
+                <Text style={styles.recentBillNo}>#{bill.billNo} - {formatDateForBill(bill.billDate)}</Text>
+                <Text style={styles.recentCustomer}>{bill.customerName || 'Customer'}</Text>
+              </View>
+              <Text style={styles.recentAmount}>{formatMoney(bill.netTotal)}</Text>
+              <Pressable onPress={() => onMarkEntered(bill.id)} style={[styles.smallButton, styles.clearButton]}>
+                <Text style={styles.smallButtonText}>Clear</Text>
+              </Pressable>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.emptyText}>Selected period me pending office entry nahi hai.</Text>
+        )}
+      </View>
+
+      <Section title={t(language, 'recentBills')} />
+      <View style={styles.recentList}>
+        {recentBills.length ? (
+          recentBills.map((bill) => (
+            <View key={bill.id} style={styles.recentRow}>
+              <View>
+                <Text style={styles.recentBillNo}>#{bill.billNo} - {formatDateForBill(bill.billDate)}</Text>
+                <Text style={styles.recentCustomer}>{bill.customerName || 'Customer'}</Text>
+              </View>
+              <View style={styles.recentAmountBlock}>
+                <Text style={styles.recentAmount}>{formatMoney(bill.netTotal)}</Text>
+                <Text style={styles.recentSync}>{bill.entryStatus === 'entered' ? 'clear' : 'pending'} | {bill.syncStatus}</Text>
+                <View style={styles.billActionRow}>
+                  <Pressable onPress={() => void onShareBill(bill.id, 'customer')} style={[styles.billIconButton, styles.customerShareButton]}>
+                    <Text style={styles.billIconButtonText}>Cus</Text>
+                  </Pressable>
+                  <Pressable onPress={() => void onShareBill(bill.id, 'other')} style={styles.billIconButton}>
+                    <Text style={styles.billIconButtonText}>PDF</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.emptyText}>No bills saved yet.</Text>
+        )}
+      </View>
+    </ScrollView>
+  );
+}
 
 function PageHeader({ title, onBack }: { title: string; onBack: () => void }) {
   return <HeaderBar title={title} onBack={onBack} />;
 }
 
-
+function RatesScreen({
+  goldRate,
+  isSyncing,
+  onBack,
+  onGoldRateChange,
+  onRateDateChange,
+  onSaveRates,
+  onSilverRateChange,
+  onSync,
+  rateDate,
+  silverRate,
+  syncMessage,
+}: {
+  goldRate: string;
+  isSyncing: boolean;
+  onBack: () => void;
+  onGoldRateChange: (value: string) => void;
+  onRateDateChange: (value: string) => void;
+  onSaveRates: () => void;
+  onSilverRateChange: (value: string) => void;
+  onSync: () => void;
+  rateDate: string;
+  silverRate: string;
+  syncMessage: string;
+}) {
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <PageHeader title="Rate update" onBack={onBack} />
+      <View style={styles.panel}>
+        <View style={styles.formGrid}>
+        <DateField label="Rate date" value={rateDate} onChangeText={onRateDateChange} />
+          <Field keyboardType="numeric" label="Gold 10g" value={goldRate} onChangeText={onGoldRateChange} />
+          <Field keyboardType="numeric" label="Silver 1kg" value={silverRate} onChangeText={onSilverRateChange} />
+        </View>
+        <View style={styles.actionBar}>
+          <Pressable onPress={onSaveRates} style={styles.button}>
+            <Text style={styles.buttonText}>Save rates</Text>
+          </Pressable>
+          <Pressable disabled={isSyncing} onPress={onSync} style={[styles.button, styles.secondaryButton]}>
+            <Text style={styles.secondaryButtonText}>{isSyncing ? 'Updating...' : 'Update data'}</Text>
+          </Pressable>
+        </View>
+      </View>
+      <Text style={styles.syncMessage}>{syncMessage}</Text>
+    </ScrollView>
+  );
+}
 
 function BillPeriodFilter({
   billPeriod,
@@ -4105,20 +4381,22 @@ function PartiesScreen({
       <View style={styles.folderGrid}>
         {filteredParties.length ? (
           filteredParties.map((folder) => (
-            <Pressable key={folder.customerId} onPress={() => onOpenParty(folder.customerId)} style={styles.folderCard}>
-              <View style={styles.folderIcon}>
-                <Text style={styles.folderIconText}>P</Text>
-              </View>
-              <View style={styles.folderBody}>
-                <Text style={styles.folderName}>{folder.customerName}</Text>
-                <Text style={styles.folderMeta}>
-                  {folder.billCount} bills | Last {formatDateForBill(folder.lastBillDate)}
-                </Text>
-                <Text style={styles.folderMeta}>{folder.customerMobile || 'No mobile'}</Text>
-                <Text style={styles.folderMeta}>{folder.customerAddress || 'No address'}</Text>
-                <PartyLedgerPills ledger={partyLedgerMap.get(folder.customerId)} />
-              </View>
-              <Text style={styles.folderAmount}>{formatMoney(partyLedgerMap.get(folder.customerId)?.labourBalance ?? folder.totalAmount)}</Text>
+            <Pressable key={folder.customerId} onPress={() => onOpenParty(folder.customerId)} style={{ marginBottom: 12 }}>
+              <Card style={{ flexDirection: 'row', alignItems: 'center', padding: 12 }}>
+                <View style={styles.folderIcon}>
+                  <Text style={styles.folderIconText}>P</Text>
+                </View>
+                <View style={styles.folderBody}>
+                  <Text style={styles.folderName}>{folder.customerName}</Text>
+                  <Text style={styles.folderMeta}>
+                    {folder.billCount} bills | Last {formatDateForBill(folder.lastBillDate)}
+                  </Text>
+                  <Text style={styles.folderMeta}>{folder.customerMobile || 'No mobile'}</Text>
+                  <Text style={styles.folderMeta}>{folder.customerAddress || 'No address'}</Text>
+                  <PartyLedgerPills ledger={partyLedgerMap.get(folder.customerId)} />
+                </View>
+                <Text style={styles.folderAmount}>{formatMoney(partyLedgerMap.get(folder.customerId)?.labourBalance ?? folder.totalAmount)}</Text>
+              </Card>
             </Pressable>
           ))
         ) : (
@@ -4205,350 +4483,98 @@ function AddPartyScreen({
   );
 }
 
-function PartyVoucherModal({
-  visible,
-  transaction,
-  partyFolder,
-  partyLedger,
-  onClose,
-  onShareVoucher,
-}: {
-  visible: boolean;
-  transaction: PartyTransaction | null;
-  partyFolder: PartyFolder;
-  partyLedger: PartyLedgerSummary | null;
-  onClose: () => void;
-  onShareVoucher: (transaction: PartyTransaction, target: 'customer' | 'pdf') => void;
-}) {
-  if (!transaction) return null;
-  const metalValue = fineValueFromBookedRate(transaction.material, transaction.fineWeight, transaction.bookedRate);
-  const cashTotal = partyTransactionCashTotal(transaction);
-  const totalReceived = cashTotal + metalValue;
-  const modeLabel = partyTransactionModeLabel(transaction.mode);
-
-  return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.voucherModalOverlay}>
-        <View style={styles.voucherModalSheet}>
-          <ScrollView>
-            <View style={styles.voucherModalHeader}>
-              <View>
-                <Text style={styles.voucherModalTitle}>Voucher #{transaction.voucherNo}</Text>
-                <Text style={styles.voucherModalSubtitle}>Receipt voucher</Text>
-              </View>
-              <Pressable onPress={onClose} style={styles.voucherModalClose}>
-                <Text style={styles.voucherModalCloseText}>✕</Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.voucherModalCard}>
-              <View style={styles.voucherRowItem}>
-                <Text style={styles.voucherRowLabel}>Date</Text>
-                <Text style={styles.voucherRowValue}>{formatDateForBill(transaction.transactionDate)}</Text>
-              </View>
-              <View style={styles.voucherRowItem}>
-                <Text style={styles.voucherRowLabel}>Party</Text>
-                <Text style={styles.voucherRowValue}>{partyFolder.customerName}</Text>
-              </View>
-              <View style={styles.voucherRowItem}>
-                <Text style={styles.voucherRowLabel}>Mode</Text>
-                <Text style={styles.voucherRowValue}>{modeLabel}</Text>
-              </View>
-            </View>
-
-            {(transaction.fineWeight > 0 || cashTotal > 0 || transaction.bankAmount > 0 || transaction.paymentAmount > 0 || transaction.discountAmount > 0) ? (
-              <View style={styles.voucherModalCard}>
-                <Text style={styles.voucherSectionTitle}>Transaction details</Text>
-
-                {transaction.fineWeight > 0 ? (
-                  <>
-                    <View style={styles.voucherRowItem}>
-                      <Text style={styles.voucherRowLabel}>Fine received</Text>
-                      <Text style={styles.voucherRowValue}>{formatCalcValue(transaction.fineWeight, 3)} gm</Text>
-                    </View>
-                    {transaction.bookedRate > 0 ? (
-                      <>
-                        <View style={styles.voucherRowItem}>
-                          <Text style={styles.voucherRowLabel}>Rate</Text>
-                          <Text style={styles.voucherRowValue}>{formatMoney(transaction.bookedRate)}/kg</Text>
-                        </View>
-                        <View style={styles.voucherRowItem}>
-                          <Text style={styles.voucherRowLabel}>Metal value</Text>
-                          <Text style={styles.voucherRowValue}>{formatMoney(metalValue)}</Text>
-                        </View>
-                      </>
-                    ) : null}
-                  </>
-                ) : null}
-
-                {cashTotal > 0 ? (
-                  <View style={styles.voucherRowItem}>
-                    <Text style={styles.voucherRowLabel}>Cash received</Text>
-                    <Text style={styles.voucherRowValue}>{formatMoney(cashTotal)}</Text>
-                  </View>
-                ) : null}
-
-                {transaction.bankAmount > 0 ? (
-                  <View style={styles.voucherRowItem}>
-                    <Text style={styles.voucherRowLabel}>Bank received</Text>
-                    <Text style={styles.voucherRowValue}>{formatMoney(transaction.bankAmount)}</Text>
-                  </View>
-                ) : null}
-
-                {transaction.paymentAmount > 0 ? (
-                  <View style={styles.voucherRowItem}>
-                    <Text style={styles.voucherRowLabel}>Payment given</Text>
-                    <Text style={styles.voucherRowValue}>{formatMoney(transaction.paymentAmount)}</Text>
-                  </View>
-                ) : null}
-
-                {transaction.discountAmount > 0 ? (
-                  <View style={styles.voucherRowItem}>
-                    <Text style={styles.voucherRowLabel}>Discount</Text>
-                    <Text style={styles.voucherRowValue}>{formatMoney(transaction.discountAmount)}</Text>
-                  </View>
-                ) : null}
-
-                {totalReceived > 0 ? (
-                  <View style={[styles.voucherRowItem, styles.voucherRowTotal]}>
-                    <Text style={styles.voucherRowTotalLabel}>Total received</Text>
-                    <Text style={styles.voucherRowTotalValue}>{formatMoney(totalReceived)}</Text>
-                  </View>
-                ) : null}
-
-              </View>
-            ) : null}
-
-            {transaction.note ? (
-              <View style={styles.voucherModalCard}>
-                <Text style={styles.voucherSectionTitle}>Narration</Text>
-                <Text style={styles.voucherNote}>{transaction.note}</Text>
-              </View>
-            ) : null}
-
-            <View style={styles.voucherModalCard}>
-              <Text style={styles.voucherSectionTitle}>Ledger summary</Text>
-              <View style={styles.voucherRowItem}>
-                <Text style={styles.voucherRowLabel}>Fine due</Text>
-                <Text style={styles.voucherRowValue}>{formatCalcValue(partyLedger?.fineBalance ?? 0, 3)} gm</Text>
-              </View>
-              <View style={[styles.voucherRowItem, styles.voucherRowTotal]}>
-                <Text style={styles.voucherRowTotalLabel}>Amount due</Text>
-                <Text style={styles.voucherRowTotalValue}>{formatMoney(partyLedger?.labourBalance ?? 0)}</Text>
-              </View>
-            </View>
-
-            <View style={styles.voucherModalActions}>
-              <Pressable onPress={() => { onShareVoucher(transaction, 'customer'); onClose(); }} style={styles.voucherActionBtn}>
-                <Text style={styles.voucherActionBtnText}>Share to customer</Text>
-              </Pressable>
-              <Pressable onPress={() => { onShareVoucher(transaction, 'pdf'); onClose(); }} style={styles.voucherActionBtn}>
-                <Text style={styles.voucherActionBtnText}>Download PDF</Text>
-              </Pressable>
-            </View>
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
 function PartyBillsScreen({
   bills,
   onBack,
   onCreateForParty,
   onOpenBill,
   onOpenTransact,
-  onOpenVouchers,
   onShareBill,
-  onDeleteParty,
   partyFolder,
   partyLedger,
+  transactions,
 }: {
   bills: RecentBill[];
   onBack: () => void;
   onCreateForParty: (folder: PartyFolder) => void;
   onOpenBill: (id: string) => void;
   onOpenTransact: () => void;
-  onOpenVouchers: () => void;
   onShareBill: (id: string, target: 'customer' | 'other') => void;
-  onDeleteParty: (customerId: string) => void;
-  partyFolder: PartyFolder;
-  partyLedger: PartyLedgerSummary | null;
-}) {
-  const [search, setSearch] = useState('');
-  const [billFilter, setBillFilter] = useState<'all' | 'estimate' | 'jangad'>('all');
-  const filteredBills = useMemo(
-    () => bills.filter((bill) => billMatchesSearch(bill, search) && (billFilter === 'all' || bill.billType === billFilter)),
-    [bills, search, billFilter],
-  );
-
-  return (
-    <ScrollView contentContainerStyle={styles.ledgerContainer} keyboardShouldPersistTaps="handled">
-      <PageHeader title="Party bills" onBack={onBack} />
-
-      <View style={styles.partyProfileCard}>
-        <View style={styles.partyProfileRow}>
-          <View style={styles.partyAvatar}>
-            <Text style={styles.partyAvatarText}>P</Text>
-          </View>
-          <View style={styles.partyProfileBody}>
-            <Text style={styles.partyProfileName}>{partyFolder.customerName}</Text>
-            <Text style={styles.partyProfileMeta}>
-              {partyFolder.billCount} bills | Last {formatDateForBill(partyFolder.lastBillDate)}
-            </Text>
-            <Text style={styles.partyProfileMeta}>{partyFolder.customerMobile || 'No mobile'}</Text>
-            <Text style={styles.partyProfileMeta}>{partyFolder.customerAddress || 'No address'}</Text>
-          </View>
-          <Text style={styles.partyProfileAmount}>{formatMoney(partyLedger?.labourBalance ?? partyFolder.totalAmount)}</Text>
-        </View>
-      </View>
-
-      <Text style={styles.ledgerSectionTitle}>Party ledger</Text>
-
-      <View style={styles.ledgerSummaryRow}>
-        <View style={styles.ledgerSummaryCard}>
-          <Text style={styles.ledgerSummaryLabel}>FINE GIVEN</Text>
-          <Text style={styles.ledgerSummaryValue}>{formatCalcValue(partyLedger?.fineGiven ?? 0, 3)} gm</Text>
-        </View>
-        <View style={styles.ledgerSummaryCard}>
-          <Text style={styles.ledgerSummaryLabel}>DUE</Text>
-          <Text style={styles.ledgerSummaryValue}>{formatCalcValue(partyLedger?.fineBalance ?? 0, 3)} gm</Text>
-        </View>
-        <View style={styles.ledgerSummaryCard}>
-          <Text style={styles.ledgerSummaryLabel}>AMOUNT DUE</Text>
-          <Text style={styles.ledgerSummaryValue}>{formatMoney(partyLedger?.labourBalance ?? 0)}</Text>
-        </View>
-      </View>
-
-      <View style={styles.ledgerSummaryRow}>
-        <View style={[styles.ledgerSummaryCard, styles.ledgerSummaryCardWide]}>
-          <Text style={styles.ledgerSummaryLabel}>RECEIVED</Text>
-          <Text style={styles.ledgerSummaryValue}>{formatMoney(partyLedger?.amountReceived ?? 0)}</Text>
-        </View>
-        <View style={[styles.ledgerSummaryCard, styles.ledgerSummaryCardWide]}>
-          <Text style={styles.ledgerSummaryLabel}>RATE CUT</Text>
-          <Text style={styles.ledgerSummaryValue}>{formatMoney(partyLedger?.rateCutAmount ?? 0)}</Text>
-        </View>
-      </View>
-
-      <View style={styles.ledgerActionBar}>
-        <Pressable onPress={() => onOpenVouchers()} style={styles.ledgerButtonPrimary}>
-          <Text style={styles.ledgerButtonPrimaryText}>Receipt vouchers</Text>
-        </Pressable>
-        <Pressable onPress={() => onCreateForParty(partyFolder)} style={styles.ledgerButtonOutline}>
-          <Text style={styles.ledgerButtonOutlineText}>New bill</Text>
-        </Pressable>
-        <Pressable onPress={onOpenTransact} style={styles.ledgerButtonOutline}>
-          <Text style={styles.ledgerButtonOutlineText}>Transact</Text>
-        </Pressable>
-        <Pressable onPress={() => {
-          Alert.alert('Delete party', 'Party aur iske saare bills delete ho jayenge. Do you want to continue?', [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Delete', style: 'destructive', onPress: () => onDeleteParty(partyFolder.customerId) },
-          ]);
-        }} style={styles.ledgerButtonDanger}>
-          <Text style={styles.ledgerButtonDangerText}>Delete party</Text>
-        </Pressable>
-      </View>
-
-      <View style={styles.billFilterRow}>
-        <Pressable onPress={() => setBillFilter('all')} style={[styles.billFilterBtn, billFilter === 'all' && styles.billFilterBtnActive]}>
-          <Text style={[styles.billFilterText, billFilter === 'all' && styles.billFilterTextActive]}>All</Text>
-        </Pressable>
-        <Pressable onPress={() => setBillFilter('estimate')} style={[styles.billFilterBtn, billFilter === 'estimate' && styles.billFilterBtnActive]}>
-          <Text style={[styles.billFilterText, billFilter === 'estimate' && styles.billFilterTextActive]}>Est. Bill</Text>
-        </Pressable>
-        <Pressable onPress={() => setBillFilter('jangad')} style={[styles.billFilterBtn, billFilter === 'jangad' && styles.billFilterBtnActive]}>
-          <Text style={[styles.billFilterText, billFilter === 'jangad' && styles.billFilterTextActive]}>Jangad Bill</Text>
-        </Pressable>
-      </View>
-      <Section title={`${partyFolder.customerName} bills`} />
-      <SearchBox placeholder="Search bill no, date, amount" value={search} onChangeText={setSearch} />
-      <BillList bills={filteredBills} emptyText={bills.length ? 'Search me bill nahi mila.' : 'Is party ka bill nahi mila.'} onOpenBill={onOpenBill} onShareBill={onShareBill} />
-    </ScrollView>
-  );
-}
-
-function PartyVouchersScreen({
-  onBack,
-  onShareVoucher,
-  onOpenTransact,
-  partyFolder,
-  partyLedger,
-  transactions,
-}: {
-  onBack: () => void;
-  onShareVoucher: (transaction: PartyTransaction, target: 'customer' | 'pdf') => void;
-  onOpenTransact: () => void;
   partyFolder: PartyFolder;
   partyLedger: PartyLedgerSummary | null;
   transactions: PartyTransaction[];
 }) {
-  const [selectedVoucher, setSelectedVoucher] = useState<PartyTransaction | null>(null);
+  const [search, setSearch] = useState('');
+  const filteredBills = useMemo(() => bills.filter((bill) => billMatchesSearch(bill, search)), [bills, search]);
 
   return (
-    <ScrollView contentContainerStyle={styles.ledgerContainer} keyboardShouldPersistTaps="handled">
-      <PageHeader title="Receipt vouchers" onBack={onBack} />
-
-      <View style={styles.partyProfileCard}>
-        <View style={styles.partyProfileRow}>
-          <View style={styles.partyAvatar}>
-            <Text style={styles.partyAvatarText}>P</Text>
-          </View>
-          <View style={styles.partyProfileBody}>
-            <Text style={styles.partyProfileName}>{partyFolder.customerName}</Text>
-            <Text style={styles.partyProfileMeta}>{partyFolder.customerMobile || 'No mobile'}</Text>
-          </View>
-          <Text style={styles.partyProfileAmount}>{formatMoney(partyLedger?.labourBalance ?? 0)}</Text>
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <PageHeader title="Party bills" onBack={onBack} />
+      <View style={[styles.folderCard, styles.activeFolderCard]}>
+        <View style={styles.folderIcon}>
+          <Text style={styles.folderIconText}>P</Text>
         </View>
+        <View style={styles.folderBody}>
+          <Text style={styles.folderName}>{partyFolder.customerName}</Text>
+          <Text style={styles.folderMeta}>
+            {partyFolder.billCount} bills | Last {formatDateForBill(partyFolder.lastBillDate)}
+          </Text>
+          <Text style={styles.folderMeta}>{partyFolder.customerMobile || 'No mobile'}</Text>
+          <Text style={styles.folderMeta}>{partyFolder.customerAddress || 'No address'}</Text>
+        </View>
+        <Text style={styles.folderAmount}>{formatMoney(partyLedger?.labourBalance ?? partyFolder.totalAmount)}</Text>
       </View>
-
       {partyLedger ? (
-        <View style={styles.ledgerSummaryRow}>
-          <View style={styles.ledgerSummaryCard}>
-            <Text style={styles.ledgerSummaryLabel}>FINE DUE</Text>
-            <Text style={styles.ledgerSummaryValue}>{formatCalcValue(partyLedger.fineBalance, 3)} gm</Text>
+        <>
+          <Section title="Party ledger" />
+          <View style={styles.summaryGrid}>
+            <SummaryTile label="Fine given" value={`${formatCalcValue(partyLedger.fineGiven, 3) || '0'} gm`} />
+            <SummaryTile label={ledgerFineLabel(partyLedger)} value={ledgerFineValue(partyLedger)} />
+            <SummaryTile label="Amount due" value={formatMoney(partyLedger.labourBalance)} />
+            <SummaryTile label="Received" value={formatMoney(partyLedger.amountReceived)} />
+            {partyLedger.openingFineBalance > 0 ? <SummaryTile label="Opening fine" value={`${formatCalcValue(partyLedger.openingFineBalance, 3)} gm`} /> : null}
+            {partyLedger.openingLabourBalance > 0 ? <SummaryTile label="Opening amount" value={formatMoney(partyLedger.openingLabourBalance)} /> : null}
+            {partyLedger.rateCutAmount > 0 ? <SummaryTile label="Rate cut" value={formatMoney(partyLedger.rateCutAmount)} /> : null}
+            {partyLedger.discountAmount > 0 ? <SummaryTile label="Discount" value={formatMoney(partyLedger.discountAmount)} /> : null}
           </View>
-          <View style={styles.ledgerSummaryCard}>
-            <Text style={styles.ledgerSummaryLabel}>AMOUNT DUE</Text>
-            <Text style={styles.ledgerSummaryValue}>{formatMoney(partyLedger.labourBalance)}</Text>
-          </View>
-        </View>
+        </>
       ) : null}
 
-      <Pressable onPress={onOpenTransact} style={[styles.ledgerButtonPrimary, { marginBottom: 14 }]}>
-        <Text style={styles.ledgerButtonPrimaryText}>+ New voucher</Text>
-      </Pressable>
+      <View style={styles.actionBar}>
+        <Pressable onPress={() => onCreateForParty(partyFolder)} style={styles.button}>
+          <Text style={styles.buttonText}>New bill for party</Text>
+        </Pressable>
+        <Pressable onPress={onOpenTransact} style={[styles.button, styles.secondaryButton]}>
+          <Text style={styles.secondaryButtonText}>Open party transact / receipt</Text>
+        </Pressable>
+      </View>
 
-      <Section title="All vouchers" />
-      {transactions.length ? (
-        <View style={styles.voucherList}>
-          {transactions.map((transaction) => (
-            <Pressable key={transaction.id} onPress={() => setSelectedVoucher(transaction)} style={styles.voucherRow}>
-              <View style={styles.voucherLeft}>
-                <Text style={styles.voucherTitle}>Voucher #{transaction.voucherNo}</Text>
-                <Text style={styles.voucherDate}>{formatDateForBill(transaction.transactionDate)}</Text>
+      <Section title="Party vouchers" />
+      <View style={styles.recentList}>
+        {transactions.length ? (
+          transactions.map((transaction) => (
+            <View key={transaction.id} style={styles.transactionRow}>
+              <View style={styles.billRowMain}>
+                <Text style={styles.recentBillNo}>Voucher #{transaction.voucherNo} - {formatDateForBill(transaction.transactionDate)}</Text>
+                <Text style={styles.recentCustomer}>{partyTransactionModeLabel(transaction.mode)}</Text>
+                <Text style={styles.recentSync}>
+                  {partyTransactionCashTotal(transaction) > 0 ? `Cash/bank ${formatMoney(partyTransactionCashTotal(transaction))} | ` : ''}
+                  {transaction.fineWeight > 0 ? `Metal ${formatCalcValue(transaction.fineWeight, 3)} gm | ` : ''}
+                  {transaction.paymentAmount > 0 ? `Payment ${formatMoney(transaction.paymentAmount)} | ` : ''}
+                  {transaction.discountAmount > 0 ? `Dis ${formatMoney(transaction.discountAmount)} | ` : ''}
+                  {transaction.note || 'No narration'}
+                </Text>
               </View>
-              <View style={styles.voucherRight}>
-                <Text style={styles.voucherMode}>{partyTransactionModeLabel(transaction.mode)}</Text>
-                <Text style={{ color: '#6d665f', fontSize: 10 }}>›</Text>
-              </View>
-            </Pressable>
-          ))}
-        </View>
-      ) : (
-        <Text style={styles.emptyText}>Abhi receipt voucher nahi hai.</Text>
-      )}
+            </View>
+          ))
+        ) : (
+          <Text style={styles.emptyText}>Abhi party voucher entry nahi hai.</Text>
+        )}
+      </View>
 
-      <PartyVoucherModal
-        visible={selectedVoucher !== null}
-        transaction={selectedVoucher}
-        partyFolder={partyFolder}
-        partyLedger={partyLedger}
-        onClose={() => setSelectedVoucher(null)}
-        onShareVoucher={onShareVoucher}
-      />
+      <Section title={`${partyFolder.customerName} bills`} />
+      <SearchBox placeholder="Search bill no, date, amount" value={search} onChangeText={setSearch} />
+      <BillList bills={filteredBills} emptyText={bills.length ? 'Search me bill nahi mila.' : 'Is party ka bill nahi mila.'} onOpenBill={onOpenBill} onShareBill={onShareBill} />
     </ScrollView>
   );
 }
@@ -4563,7 +4589,7 @@ function PartyTransactScreen({
 }: {
   onBack: () => void;
   onSavePartyTransaction: (input: PartyTransactionFormInput) => Promise<PartyTransaction | false>;
-  onShareVoucher: (transaction: PartyTransaction, target: 'customer' | 'pdf') => void;
+  onShareVoucher: (transaction: PartyTransaction) => void;
   partyFolder: PartyFolder;
   partyLedger: PartyLedgerSummary | null;
   transactions: PartyTransaction[];
@@ -4578,7 +4604,6 @@ function PartyTransactScreen({
   const [transactionPayment, setTransactionPayment] = useState('');
   const [transactionDiscount, setTransactionDiscount] = useState('');
   const [transactionNote, setTransactionNote] = useState('');
-  const [selectedVoucher, setSelectedVoucher] = useState<PartyTransaction | null>(null);
   const [isSavingTransaction, setIsSavingTransaction] = useState(false);
   const metalValue = useMemo(
     () => fineValueFromBookedRate(transactionMaterial, transactionFine, transactionBookedRate),
@@ -4607,7 +4632,7 @@ function PartyTransactScreen({
         setTransactionPayment('');
         setTransactionDiscount('');
         setTransactionNote('');
-        onShareVoucher(saved, 'pdf');
+        onShareVoucher(saved);
       }
     } finally {
       setIsSavingTransaction(false);
@@ -4619,7 +4644,7 @@ function PartyTransactScreen({
       <PageHeader title={`${partyFolder.customerName} transact`} onBack={onBack} />
       <View style={styles.accountHero}>
         <Text style={styles.accountHeroTitle}>Party account receipt</Text>
-        <Text style={styles.accountHeroMeta}>Cash/bank receive, fine receive aur payment yahan se party ledger me post honge.</Text>
+        <Text style={styles.accountHeroMeta}>Cash/bank receive, fine receive, payment aur discount yahan se party ledger me post honge.</Text>
       </View>
       {partyLedger ? (
         <View style={styles.stripSummary}>
@@ -4637,8 +4662,8 @@ function PartyTransactScreen({
               { label: 'Bank rec', value: 'bank' },
               { label: 'Split rec', value: 'split' },
               { label: 'Metal rec', value: 'fine' },
-              { label: 'Fine rec', value: 'fine_rec' },
               { label: 'Payment', value: 'payment' },
+              { label: 'Discount', value: 'discount' },
             ]}
             value={transactionMode}
             wrap
@@ -4653,24 +4678,11 @@ function PartyTransactScreen({
           {transactionMode === 'bank' || transactionMode === 'split' ? (
             <Field keyboardType="decimal-pad" label="Bank received" selectTextOnFocus value={transactionBank} onChangeText={setTransactionBank} />
           ) : null}
-          {transactionMode === 'split' ? (
-            <>
-              <View style={styles.segmentBlock}>
-                <Text style={styles.fieldLabel}>Metal</Text>
-                <MetalSelector material={transactionMaterial} onChange={setTransactionMaterial} />
-              </View>
-              <Field keyboardType="decimal-pad" label="Fine received (gm)" selectTextOnFocus value={transactionFine} onChangeText={setTransactionFine} />
-              <Field
-                keyboardType="decimal-pad"
-                label={`Booked rate (${partyTransactionMetalRateLabel({ material: transactionMaterial })})`}
-                selectTextOnFocus
-                value={transactionBookedRate}
-                onChangeText={setTransactionBookedRate}
-              />
-            </>
-          ) : null}
           {transactionMode === 'payment' ? (
             <Field keyboardType="decimal-pad" label="Payment given" selectTextOnFocus value={transactionPayment} onChangeText={setTransactionPayment} />
+          ) : null}
+          {transactionMode === 'discount' ? (
+            <Field keyboardType="decimal-pad" label="Discount" selectTextOnFocus value={transactionDiscount} onChangeText={setTransactionDiscount} />
           ) : null}
           {transactionMode === 'fine' ? (
             <>
@@ -4687,20 +4699,7 @@ function PartyTransactScreen({
                 onChangeText={setTransactionBookedRate}
               />
               <Field editable={false} label="Metal amount equivalent" value={metalValue > 0 ? formatBillMoney(metalValue) : ''} onChangeText={() => {}} />
-              <Field keyboardType="decimal-pad" label="Cash received" selectTextOnFocus value={transactionCash} onChangeText={setTransactionCash} />
             </>
-          ) : null}
-          {transactionMode === 'fine_rec' ? (
-            <>
-              <View style={styles.segmentBlock}>
-                <Text style={styles.fieldLabel}>Metal</Text>
-                <MetalSelector material={transactionMaterial} onChange={setTransactionMaterial} />
-              </View>
-              <Field keyboardType="decimal-pad" label="Fine received (gm)" selectTextOnFocus value={transactionFine} onChangeText={setTransactionFine} />
-            </>
-          ) : null}
-          {transactionMode !== 'fine_rec' ? (
-            <Field keyboardType="decimal-pad" label="Discount (optional)" selectTextOnFocus value={transactionDiscount} onChangeText={setTransactionDiscount} />
           ) : null}
           <Field label="Narration" multiline value={transactionNote} onChangeText={setTransactionNote} />
         </View>
@@ -4710,33 +4709,30 @@ function PartyTransactScreen({
       </View>
 
       <Section title="Receipt vouchers" />
-      {transactions.length ? (
-        <View style={styles.voucherList}>
-          {transactions.map((transaction) => (
-            <Pressable key={transaction.id} onPress={() => setSelectedVoucher(transaction)} style={styles.voucherRow}>
-              <View style={styles.voucherLeft}>
-                <Text style={styles.voucherTitle}>Voucher #{transaction.voucherNo}</Text>
-                <Text style={styles.voucherDate}>{formatDateForBill(transaction.transactionDate)}</Text>
+      <View style={styles.recentList}>
+        {transactions.length ? (
+          transactions.map((transaction) => (
+            <View key={transaction.id} style={styles.transactionRow}>
+              <View style={styles.billRowMain}>
+                <Text style={styles.recentBillNo}>Voucher #{transaction.voucherNo} - {formatDateForBill(transaction.transactionDate)}</Text>
+                <Text style={styles.recentCustomer}>{partyTransactionModeLabel(transaction.mode)}</Text>
+                <Text style={styles.recentSync}>
+                  {partyTransactionCashTotal(transaction) > 0 ? `Cash/bank ${formatMoney(partyTransactionCashTotal(transaction))} | ` : ''}
+                  {transaction.fineWeight > 0 ? `Metal ${formatCalcValue(transaction.fineWeight, 3)} gm | ` : ''}
+                  {transaction.paymentAmount > 0 ? `Payment ${formatMoney(transaction.paymentAmount)} | ` : ''}
+                  {transaction.discountAmount > 0 ? `Dis ${formatMoney(transaction.discountAmount)} | ` : ''}
+                  {transaction.note || 'No narration'}
+                </Text>
               </View>
-              <View style={styles.voucherRight}>
-                <Text style={styles.voucherMode}>{partyTransactionModeLabel(transaction.mode)}</Text>
-                <Text style={{ color: '#6d665f', fontSize: 10 }}>›</Text>
-              </View>
-            </Pressable>
-          ))}
-        </View>
-      ) : (
-        <Text style={styles.emptyText}>Abhi receipt voucher nahi hai.</Text>
-      )}
-
-      <PartyVoucherModal
-        visible={selectedVoucher !== null}
-        transaction={selectedVoucher}
-        partyFolder={partyFolder}
-        partyLedger={partyLedger}
-        onClose={() => setSelectedVoucher(null)}
-        onShareVoucher={onShareVoucher}
-      />
+              <Pressable onPress={() => void onShareVoucher(transaction)} style={styles.billIconButton}>
+                <Text style={styles.billIconButtonText}>PDF</Text>
+              </Pressable>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.emptyText}>Abhi receipt voucher nahi hai.</Text>
+        )}
+      </View>
     </ScrollView>
   );
 }
@@ -4773,42 +4769,266 @@ function supplierMatchesSearch(supplier: SupplierAccount, ledger: SupplierLedger
   );
 }
 
-function partyShortForm(name: string) {
-  if (!name) return '';
-  const parts = name.trim().split(/\s+/);
-  if (parts.length === 1) return parts[0].slice(0, 3).toUpperCase();
-  return parts.map((p) => p[0]).join('').toUpperCase().slice(0, 3);
+function SuppliersScreen({
+  ledgers,
+  onAddSupplier,
+  onBack,
+  onOpenSupplier,
+  suppliers,
+}: {
+  ledgers: Map<string, SupplierLedgerSummary>;
+  onAddSupplier: () => void;
+  onBack: () => void;
+  onOpenSupplier: (supplierId: string) => void;
+  suppliers: SupplierAccount[];
+}) {
+  const [search, setSearch] = useState('');
+  const filteredSuppliers = useMemo(
+    () => suppliers.filter((supplier) => supplierMatchesSearch(supplier, ledgers.get(supplier.id), search)),
+    [ledgers, search, suppliers],
+  );
+  const totalFinePayable = [...ledgers.values()].reduce((sum, ledger) => sum + ledger.finePayable, 0);
+  const totalAmountPayable = [...ledgers.values()].reduce((sum, ledger) => sum + ledger.amountPayable, 0);
+
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <PageHeader title="Suppliers" onBack={onBack} />
+      <View style={styles.stripSummary}>
+        <SummaryTile label="Fine payable" value={`${formatCalcValue(totalFinePayable, 3) || '0'} gm`} />
+        <SummaryTile label="Amount payable" value={formatMoney(totalAmountPayable)} />
+      </View>
+      <Pressable onPress={onAddSupplier} style={styles.button}>
+        <Text style={styles.buttonText}>Add supplier</Text>
+      </Pressable>
+      <SearchBox placeholder="Search supplier, mobile, address" value={search} onChangeText={setSearch} />
+      <View style={styles.recentList}>
+        {filteredSuppliers.length ? (
+          filteredSuppliers.map((supplier) => {
+            const ledger = ledgers.get(supplier.id);
+            return (
+              <Pressable key={supplier.id} onPress={() => onOpenSupplier(supplier.id)} style={styles.folderCard}>
+                <View style={styles.folderIcon}>
+                  <Text style={styles.folderIconText}>S</Text>
+                </View>
+                <View style={styles.billRowMain}>
+                  <Text style={styles.folderName}>{supplier.name}</Text>
+                  <Text style={styles.folderMeta}>Entry {formatDateForBill(supplier.entryDate)}</Text>
+                  <Text style={styles.folderMeta}>{supplier.mobile || 'No mobile'}</Text>
+                  <Text style={styles.folderMeta}>{supplier.address || 'No address'}</Text>
+                </View>
+                <View style={styles.folderAmountBlock}>
+                  <Text style={styles.folderAmount}>{formatMoney(ledger?.amountPayable ?? supplier.openingAmountPayable)}</Text>
+                  <Text style={styles.recentSync}>{formatCalcValue(ledger?.finePayable ?? supplier.openingFinePayable, 3) || '0'} gm</Text>
+                </View>
+              </Pressable>
+            );
+          })
+        ) : (
+          <Text style={styles.emptyText}>{suppliers.length ? 'Search me supplier nahi mila.' : 'Abhi supplier account nahi hai.'}</Text>
+        )}
+      </View>
+    </ScrollView>
+  );
 }
 
-async function generateLedgerPdfHtml(ledgerType: string, ledgerRows: (CashBankLedgerEntry & { balance: number })[], openingBalance: string, receiptTotal: number, paymentTotal: number, closing: number) {
-  const rows = ledgerRows.map(
-    (r) =>
-      `<tr>
-        <td style="border:1px solid #ccc;padding:4px 6px;font-size:10px;text-align:center">${r.date}</td>
-        <td style="border:1px solid #ccc;padding:4px 6px;font-size:10px">${r.particular}${r.party ? '<br><small style="color:#888">' + partyShortForm(r.party) + ' ' + r.party + '</small>' : ''}</td>
-        <td style="border:1px solid #ccc;padding:4px 6px;font-size:10px;text-align:right">${r.receipt > 0 ? r.receipt.toFixed(2) : '-'}</td>
-        <td style="border:1px solid #ccc;padding:4px 6px;font-size:10px;text-align:right">${r.payment > 0 ? r.payment.toFixed(2) : '-'}</td>
-        <td style="border:1px solid #ccc;padding:4px 6px;font-size:10px;text-align:right">${r.balance.toFixed(2)}</td>
-      </tr>`,
-  ).join('\n');
+function SupplierDetailScreen({
+  ledger,
+  onBack,
+  onOpenTransact,
+  supplier,
+  transactions,
+}: {
+  ledger: SupplierLedgerSummary | null;
+  onBack: () => void;
+  onOpenTransact: () => void;
+  supplier: SupplierAccount;
+  transactions: SupplierTransaction[];
+}) {
+  const [search, setSearch] = useState('');
+  const filteredTransactions = transactions.filter((transaction) =>
+    includesSearch(
+      [
+        transaction.voucherNo,
+        transaction.transactionDate,
+        supplierTransactionModeLabel(transaction.mode),
+        transaction.fineWeight,
+        transaction.cashAmount,
+        transaction.bankAmount,
+        transaction.note,
+      ],
+      search,
+    ),
+  );
 
-  const ob = parseAmount(openingBalance);
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <PageHeader title="Supplier ledger" onBack={onBack} />
+      <View style={styles.partyHeaderCard}>
+        <View style={styles.folderIcon}>
+          <Text style={styles.folderIconText}>S</Text>
+        </View>
+        <View style={styles.billRowMain}>
+          <Text style={styles.folderName}>{supplier.name}</Text>
+          <Text style={styles.folderMeta}>Entry {formatDateForBill(supplier.entryDate)}</Text>
+          <Text style={styles.folderMeta}>{supplier.mobile || 'No mobile'}</Text>
+          <Text style={styles.folderMeta}>{supplier.address || 'No address'}</Text>
+        </View>
+      </View>
+      <View style={styles.stripSummary}>
+        <SummaryTile label="Fine payable" value={`${formatCalcValue(ledger?.finePayable ?? supplier.openingFinePayable, 3) || '0'} gm`} />
+        <SummaryTile label="Amount payable" value={formatMoney(ledger?.amountPayable ?? supplier.openingAmountPayable)} />
+        <SummaryTile label="Paid" value={formatMoney(ledger?.amountPaid ?? 0)} />
+      </View>
+      <Pressable onPress={onOpenTransact} style={styles.button}>
+        <Text style={styles.buttonText}>Transact / pay supplier</Text>
+      </Pressable>
+      <SearchBox placeholder="Search voucher, date, amount" value={search} onChangeText={setSearch} />
+      <View style={styles.recentList}>
+        {filteredTransactions.length ? (
+          filteredTransactions.map((transaction) => (
+            <View key={transaction.id} style={styles.transactionRow}>
+              <View style={styles.billRowMain}>
+                <Text style={styles.recentBillNo}>Voucher #{transaction.voucherNo} - {formatDateForBill(transaction.transactionDate)}</Text>
+                <Text style={styles.recentCustomer}>{supplierTransactionModeLabel(transaction.mode)}</Text>
+                <Text style={styles.recentSync}>
+                  {transaction.fineWeight > 0 ? `${formatCalcValue(transaction.fineWeight, 3)} gm | ` : ''}
+                  {transaction.cashAmount + transaction.bankAmount > 0 ? `${formatMoney(transaction.cashAmount + transaction.bankAmount)} | ` : ''}
+                  {transaction.discountAmount > 0 ? `Dis ${formatMoney(transaction.discountAmount)} | ` : ''}
+                  {transaction.note || 'No narration'}
+                </Text>
+              </View>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.emptyText}>{transactions.length ? 'Search me transaction nahi mila.' : 'Abhi supplier transaction nahi hai.'}</Text>
+        )}
+      </View>
+    </ScrollView>
+  );
+}
 
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
-  body{font-family:sans-serif;margin:20px}
-  h2{text-align:center;margin-bottom:4px}
-  .sub{text-align:center;color:#666;font-size:12px;margin-bottom:16px}
-  table{width:100%;border-collapse:collapse}
-  th{background:#f4eadf;border:1px solid #ccc;padding:6px;font-size:11px;text-align:center}
-  .total{font-weight:700;font-size:11px}
-</style></head><body>
-<h2>${ledgerType === 'cash' ? 'Cash' : 'Bank'} Ledger</h2>
-<div class="sub">Opening: ${ob.toFixed(2)} | Receipt: ${receiptTotal.toFixed(2)} | Payment: ${paymentTotal.toFixed(2)} | Closing: ${closing.toFixed(2)}</div>
-<table><thead><tr>
-  <th>DATE</th><th>PARTICULAR</th><th>REC</th><th>PAY</th><th>BAL</th>
-</tr></thead><tbody>${rows}</tbody></table>
-</body></html>`;
+function SupplierTransactScreen({
+  ledger,
+  onBack,
+  onSaveSupplierTransaction,
+  supplier,
+  transactions,
+}: {
+  ledger: SupplierLedgerSummary | null;
+  onBack: () => void;
+  onSaveSupplierTransaction: (input: SupplierTransactionFormInput) => Promise<SupplierTransaction | false>;
+  supplier: SupplierAccount;
+  transactions: SupplierTransaction[];
+}) {
+  const [transactionDate, setTransactionDate] = useState(localIsoDate());
+  const [mode, setMode] = useState<SupplierTransactionMode>('purchase');
+  const [material, setMaterial] = useState<MetalType>('silver');
+  const [fineWeight, setFineWeight] = useState('');
+  const [bookedRate, setBookedRate] = useState('');
+  const [cashAmount, setCashAmount] = useState('');
+  const [bankAmount, setBankAmount] = useState('');
+  const [discountAmount, setDiscountAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [isSavingTransaction, setIsSavingTransaction] = useState(false);
+  const metalValue = useMemo(() => fineValueFromBookedRate(material, fineWeight, bookedRate), [bookedRate, fineWeight, material]);
+
+  async function submitTransaction() {
+    setIsSavingTransaction(true);
+    try {
+      const saved = await onSaveSupplierTransaction({
+        bankAmount,
+        bookedRate,
+        cashAmount,
+        discountAmount,
+        fineWeight,
+        material,
+        mode,
+        note,
+        transactionDate,
+      });
+      if (saved) {
+        setFineWeight('');
+        setBookedRate('');
+        setCashAmount('');
+        setBankAmount('');
+        setDiscountAmount('');
+        setNote('');
+      }
+    } finally {
+      setIsSavingTransaction(false);
+    }
+  }
+
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <PageHeader title={`${supplier.name} transact`} onBack={onBack} />
+      <View style={styles.stripSummary}>
+        <SummaryTile label="Fine payable" value={`${formatCalcValue(ledger?.finePayable ?? supplier.openingFinePayable, 3) || '0'} gm`} />
+        <SummaryTile label="Amount payable" value={formatMoney(ledger?.amountPayable ?? supplier.openingAmountPayable)} />
+      </View>
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>New supplier entry</Text>
+        <View style={styles.segmentBlock}>
+          <Text style={styles.fieldLabel}>Entry type</Text>
+          <Segment
+            options={[
+              { label: 'Purchase', value: 'purchase' },
+              { label: 'Cash paid', value: 'cash_payment' },
+              { label: 'Bank paid', value: 'bank_payment' },
+              { label: 'Split paid', value: 'split_payment' },
+              { label: 'Metal paid', value: 'metal_paid' },
+              { label: 'Discount', value: 'discount' },
+            ]}
+            value={mode}
+            wrap
+            onChange={setMode}
+          />
+        </View>
+        <View style={styles.formGrid}>
+          <DateField label="Date" value={transactionDate} onChangeText={setTransactionDate} />
+          {mode === 'purchase' || mode === 'metal_paid' ? (
+            <>
+              <View style={styles.segmentBlock}>
+                <Text style={styles.fieldLabel}>Metal</Text>
+                <MetalSelector material={material} onChange={setMaterial} />
+              </View>
+              <Field keyboardType="decimal-pad" label={mode === 'purchase' ? 'Purchase fine (gm)' : 'Metal paid (gm)'} selectTextOnFocus value={fineWeight} onChangeText={setFineWeight} />
+            </>
+          ) : null}
+          {mode === 'purchase' ? (
+            <>
+              <Field keyboardType="decimal-pad" label={`Booked rate (${partyTransactionMetalRateLabel({ material })})`} selectTextOnFocus value={bookedRate} onChangeText={setBookedRate} />
+              <Field editable={false} label="Purchase amount equivalent" value={metalValue > 0 ? formatBillMoney(metalValue) : ''} onChangeText={() => {}} />
+            </>
+          ) : null}
+          {mode === 'cash_payment' || mode === 'split_payment' ? (
+            <Field keyboardType="decimal-pad" label="Cash paid" selectTextOnFocus value={cashAmount} onChangeText={setCashAmount} />
+          ) : null}
+          {mode === 'bank_payment' || mode === 'split_payment' ? (
+            <Field keyboardType="decimal-pad" label="Bank paid" selectTextOnFocus value={bankAmount} onChangeText={setBankAmount} />
+          ) : null}
+          {mode === 'discount' ? (
+            <Field keyboardType="decimal-pad" label="Discount" selectTextOnFocus value={discountAmount} onChangeText={setDiscountAmount} />
+          ) : null}
+          <Field label="Narration" multiline value={note} onChangeText={setNote} />
+        </View>
+        <Pressable disabled={isSavingTransaction} onPress={submitTransaction} style={[styles.button, isSavingTransaction && styles.disabledButton]}>
+          <Text style={styles.buttonText}>{isSavingTransaction ? 'Saving entry...' : 'Save supplier entry'}</Text>
+        </Pressable>
+      </View>
+      <Section title="Recent supplier vouchers" />
+      <View style={styles.recentList}>
+        {transactions.slice(0, 8).map((transaction) => (
+          <View key={transaction.id} style={styles.transactionRow}>
+            <View style={styles.billRowMain}>
+              <Text style={styles.recentBillNo}>Voucher #{transaction.voucherNo} - {formatDateForBill(transaction.transactionDate)}</Text>
+              <Text style={styles.recentCustomer}>{supplierTransactionModeLabel(transaction.mode)}</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
 }
 
 function CashBankLedgerScreen({
@@ -4840,13 +5060,42 @@ function CashBankLedgerScreen({
   supplierAccounts: SupplierAccount[];
   supplierTransactions: SupplierTransaction[];
 }) {
-  const [period, setPeriod] = useState<LedgerPeriod>('month');
+  const [period, setPeriod] = useState<LedgerPeriod>('today');
   const [customFrom, setCustomFrom] = useState(localIsoDate());
   const [customTo, setCustomTo] = useState(localIsoDate());
   const [openingBalance, setOpeningBalance] = useState('');
+  const [manualDate, setManualDate] = useState(localIsoDate());
+  const [manualParticular, setManualParticular] = useState('Opening balance');
+  const [manualReceipt, setManualReceipt] = useState('');
+  const [manualPayment, setManualPayment] = useState('');
+  const [isSavingManualEntry, setIsSavingManualEntry] = useState(false);
   const [search, setSearch] = useState('');
-  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
-  const [showOpeningInput, setShowOpeningInput] = useState(false);
+
+  async function addManualLedgerEntry() {
+    const receipt = parseAmount(manualReceipt);
+    const payment = parseAmount(manualPayment);
+    if (receipt <= 0 && payment <= 0) {
+      Alert.alert('Entry required', 'Receipt ya payment amount daalo.');
+      return;
+    }
+    setIsSavingManualEntry(true);
+    try {
+      const saved = await onSaveCashBankEntry({
+        entryDate: manualDate || localIsoDate(),
+        mode: ledgerType,
+        particular: manualParticular.trim() || 'Manual ledger entry',
+        paymentAmount: manualPayment,
+        receiptAmount: manualReceipt,
+      });
+      if (saved) {
+        setManualParticular('Manual ledger entry');
+        setManualReceipt('');
+        setManualPayment('');
+      }
+    } finally {
+      setIsSavingManualEntry(false);
+    }
+  }
 
   const allEntries = useMemo(
     () => [
@@ -4855,7 +5104,7 @@ function CashBankLedgerScreen({
         .map((entry): CashBankLedgerEntry => ({
           date: entry.entryDate,
           id: entry.id,
-          mode: entry.mode as LedgerMode,
+          mode: entry.mode,
           particular: entry.particular,
           party: entry.party,
           payment: entry.paymentAmount,
@@ -4869,52 +5118,34 @@ function CashBankLedgerScreen({
     () => allEntries.filter((entry) => isLedgerInPeriod(entry.date, period, customFrom, customTo)),
     [allEntries, customFrom, customTo, period],
   );
-  const receiptTotal = periodEntries.reduce((sum, entry) => sum + entry.receipt, 0);
-  const paymentTotal = periodEntries.reduce((sum, entry) => sum + entry.payment, 0);
+  const filteredEntries = useMemo(
+    () => periodEntries.filter((entry) => includesSearch([entry.date, formatDateForBill(entry.date), entry.party, entry.particular, entry.receipt, entry.payment], search)),
+    [periodEntries, search],
+  );
+  const receiptTotal = filteredEntries.reduce((sum, entry) => sum + entry.receipt, 0);
+  const paymentTotal = filteredEntries.reduce((sum, entry) => sum + entry.payment, 0);
   const closing = parseAmount(openingBalance) + receiptTotal - paymentTotal;
   const title = ledgerType === 'cash' ? 'Cash ledger' : 'Bank ledger';
   const ledgerRows = useMemo(() => {
     let runningBalance = parseAmount(openingBalance);
-    return [...periodEntries]
+    return [...filteredEntries]
       .sort((a, b) => `${a.date}-${a.id}`.localeCompare(`${b.date}-${b.id}`))
       .map((entry) => {
         runningBalance += entry.receipt - entry.payment;
         return { ...entry, balance: runningBalance };
       });
-  }, [periodEntries, openingBalance]);
-  const filteredLedgerRows = useMemo(
-    () => ledgerRows.filter((entry) => includesSearch([entry.date, formatDateForBill(entry.date), entry.particular, entry.party, entry.receipt, entry.payment, entry.balance], search)),
-    [ledgerRows, search],
-  );
-
-  async function handleShareLedgerPdf() {
-    setIsGeneratingPdf(true);
-    try {
-      const html = await generateLedgerPdfHtml(ledgerType, filteredLedgerRows, openingBalance, receiptTotal, paymentTotal, closing);
-      const { uri } = await Print.printToFileAsync({ html });
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        await Sharing.shareAsync(uri, {
-          UTI: 'com.adobe.pdf',
-          dialogTitle: `${title} - ${period}`,
-          mimeType: 'application/pdf',
-        });
-      } else {
-        Alert.alert('PDF ready', uri);
-      }
-    } catch (error) {
-      Alert.alert('PDF failed', error instanceof Error ? error.message : 'Unable to generate PDF.');
-    } finally {
-      setIsGeneratingPdf(false);
-    }
-  }
+  }, [filteredEntries, openingBalance]);
 
   return (
     <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
       <PageHeader title={title} onBack={onBack} />
+      <View style={styles.accountHero}>
+        <Text style={styles.accountHeroTitle}>{title}</Text>
+        <Text style={styles.accountHeroMeta}>Receipts aur payments day/week/month/year/custom view me. Opening balance manual set karo, closing automatic dikhega.</Text>
+      </View>
       <View style={styles.panel}>
         <View style={styles.segmentBlock}>
-          <Text style={styles.fieldLabel}>Period</Text>
+          <Text style={styles.fieldLabel}>Ledger period</Text>
           <LedgerPeriodSelector period={period} onChange={setPeriod} />
         </View>
         {period === 'custom' ? (
@@ -4923,13 +5154,21 @@ function CashBankLedgerScreen({
             <DateField label="To" value={customTo} onChangeText={setCustomTo} />
           </View>
         ) : null}
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <Text style={styles.fieldLabel}>Opening: {openingBalance ? formatMoney(parseAmount(openingBalance)) : 'Not set'}</Text>
-          <Pressable onPress={() => setShowOpeningInput(!showOpeningInput)}>
-            <Text style={{ color: '#9b2339', fontWeight: '900', fontSize: 12 }}>{showOpeningInput ? 'Done' : openingBalance ? 'Change' : 'Set'}</Text>
+        <View style={styles.formGrid}>
+          <Field keyboardType="decimal-pad" label="Opening balance" selectTextOnFocus value={openingBalance} onChangeText={setOpeningBalance} />
+        </View>
+        <View style={styles.panelNested}>
+          <Text style={styles.panelTitle}>Add opening / manual entry</Text>
+          <View style={styles.formGrid}>
+            <DateField label="Date" value={manualDate} onChangeText={setManualDate} />
+            <Field label="Particular" value={manualParticular} onChangeText={setManualParticular} />
+            <Field keyboardType="decimal-pad" label="Receipt" selectTextOnFocus value={manualReceipt} onChangeText={setManualReceipt} />
+            <Field keyboardType="decimal-pad" label="Payment" selectTextOnFocus value={manualPayment} onChangeText={setManualPayment} />
+          </View>
+          <Pressable disabled={isSavingManualEntry} onPress={() => void addManualLedgerEntry()} style={[styles.secondaryButton, isSavingManualEntry && styles.disabledButton]}>
+            <Text style={styles.secondaryButtonText}>{isSavingManualEntry ? 'Saving entry...' : 'Add ledger entry'}</Text>
           </Pressable>
         </View>
-        {showOpeningInput ? <Field keyboardType="decimal-pad" label="Opening balance" selectTextOnFocus value={openingBalance} onChangeText={setOpeningBalance} /> : null}
         <View style={styles.summaryGrid}>
           <SummaryTile label="Opening" value={formatMoney(parseAmount(openingBalance))} />
           <SummaryTile label="Receipt" value={formatMoney(receiptTotal)} />
@@ -4937,35 +5176,34 @@ function CashBankLedgerScreen({
           <SummaryTile label="Closing" value={formatMoney(closing)} />
         </View>
       </View>
-      <SearchBox placeholder={`Search ${title.toLowerCase()}`} value={search} onChangeText={setSearch} />
-      <View style={{ marginHorizontal: 12, marginBottom: 8 }}>
-        <Pressable onPress={() => void handleShareLedgerPdf()} disabled={isGeneratingPdf} style={[styles.button, isGeneratingPdf && styles.disabledButton]}>
-          <Text style={styles.buttonText}>{isGeneratingPdf ? 'Generating PDF...' : 'PDF'}</Text>
-        </Pressable>
-      </View>
-      <View style={styles.ledgerTable}>
-        <View style={[styles.ledgerTableRow, styles.ledgerTableHeader]}>
-          <Text style={[styles.ledgerTableCell, { width: 70 }]}>DATE</Text>
-          <Text style={[styles.ledgerTableCell, { flex: 1 }]}>PARTICULAR</Text>
-          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>REC</Text>
-          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>PAY</Text>
-          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 62 }]}>BAL</Text>
-        </View>
-        {filteredLedgerRows.length ? filteredLedgerRows.map((entry) => (
-          <View key={entry.id} style={styles.ledgerTableRow}>
-            <Text style={[styles.ledgerTableCell, { width: 70 }]}>{formatDateForBill(entry.date)}</Text>
-            <View style={{ flex: 1, paddingRight: 2 }}>
-              <Text style={styles.ledgerParticularText} numberOfLines={2}>{entry.particular}</Text>
-              {entry.party ? <Text style={styles.ledgerPartyText} numberOfLines={1}>{partyShortForm(entry.party)} {entry.party}</Text> : null}
-            </View>
-            <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>{entry.receipt > 0 ? formatMoney(entry.receipt) : '-'}</Text>
-            <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>{entry.payment > 0 ? formatMoney(entry.payment) : '-'}</Text>
-            <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 62 }]}>{formatMoney(entry.balance)}</Text>
+      <SearchBox placeholder="Search ledger entry" value={search} onChangeText={setSearch} />
+      <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.ledgerTableScroller}>
+        <View style={styles.ledgerTable}>
+          <View style={[styles.ledgerTableRow, styles.ledgerTableHeader]}>
+            <Text style={[styles.ledgerTableCell, styles.ledgerDateCell]}>Date</Text>
+            <Text style={[styles.ledgerTableCell, styles.ledgerParticularCell]}>Particular</Text>
+            <Text style={styles.ledgerTableAmount}>Receipt</Text>
+            <Text style={styles.ledgerTableAmount}>Payment</Text>
+            <Text style={styles.ledgerTableAmount}>Balance</Text>
           </View>
-        )) : (
-          <Text style={styles.emptyText}>Selected period me {title.toLowerCase()} entry nahi hai.</Text>
-        )}
-      </View>
+          {ledgerRows.length ? (
+            ledgerRows.map((entry) => (
+              <Card key={entry.id} style={{ flexDirection: 'row', alignItems: 'center', padding: 10 }}>
+                <Text style={[styles.ledgerTableCell, styles.ledgerDateCell]}>{formatDateForBill(entry.date)}</Text>
+                <View style={[styles.ledgerParticularCell, { flex: 1 }]}>
+                  <Text style={styles.ledgerParticularText}>{entry.particular}</Text>
+                  <Text style={styles.ledgerPartyText}>{entry.party}</Text>
+                </View>
+                <Text style={styles.ledgerTableAmount}>{entry.receipt > 0 ? formatMoney(entry.receipt) : '-'}</Text>
+                <Text style={styles.ledgerTableAmount}>{entry.payment > 0 ? formatMoney(entry.payment) : '-'}</Text>
+                <Text style={styles.ledgerTableAmount}>{formatMoney(entry.balance)}</Text>
+              </Card>
+            ))
+          ) : (
+            <Text style={styles.emptyText}>Selected period me {title.toLowerCase()} entry nahi hai.</Text>
+          )}
+        </View>
+      </ScrollView>
     </ScrollView>
   );
 }
@@ -5010,8 +5248,8 @@ function BillsScreen({
       />
       <SearchBox placeholder="Search bill no, party, mobile, amount" value={search} onChangeText={setSearch} />
       <View style={styles.summaryGrid}>
-        <SummaryTile label="BILLS" value={String(filteredBills.length)} />
-        <SummaryTile label="AMOUNT" value={formatMoney(totalAmount)} />
+        <SummaryTile label="Bills" value={String(filteredBills.length)} />
+        <SummaryTile label="Amount" value={formatMoney(totalAmount)} />
       </View>
       <Section title={billPeriod === 'today' ? "Today's bills" : 'Filtered bills'} />
       <BillList
@@ -5183,7 +5421,88 @@ function RemindersScreen({
   );
 }
 
+function MarketStockScreen({
+  marketDate,
+  marketGoldWeight,
+  marketNote,
+  marketSilverWeight,
+  onBack,
+  onDateChange,
+  onGoldWeightChange,
+  onNoteChange,
+  onSave,
+  onSilverWeightChange,
+  rows,
+}: {
+  marketDate: string;
+  marketGoldWeight: string;
+  marketNote: string;
+  marketSilverWeight: string;
+  onBack: () => void;
+  onDateChange: (value: string) => void;
+  onGoldWeightChange: (value: string) => void;
+  onNoteChange: (value: string) => void;
+  onSave: () => void;
+  onSilverWeightChange: (value: string) => void;
+  rows: MarketStockSummary[];
+}) {
+  const [search, setSearch] = useState('');
+  const selectedRow = rows.find((row) => row.runDate === marketDate);
+  const filteredRows = rows.filter((row) =>
+    includesSearch([row.runDate, formatDateForBill(row.runDate), row.note, row.billCount, row.goldRemaining, row.silverRemaining], search),
+  );
 
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <PageHeader title="Market stock" onBack={onBack} />
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>Aaj kitna maal leke nikle</Text>
+        <Text style={styles.sectionHelp}>
+          Silver ko kg me daalo. Bills bante hi us date ke sold weight se balance automatic less hota jayega.
+        </Text>
+        <View style={styles.formGrid}>
+        <DateField label="Date" value={marketDate} onChangeText={onDateChange} />
+          <Field keyboardType="decimal-pad" label="Gold carried (gm)" selectTextOnFocus value={marketGoldWeight} onChangeText={onGoldWeightChange} />
+          <Field keyboardType="decimal-pad" label="Silver carried (kg)" selectTextOnFocus value={marketSilverWeight} onChangeText={onSilverWeightChange} />
+          <Field label="Note" multiline value={marketNote} onChangeText={onNoteChange} />
+        </View>
+        {selectedRow ? (
+          <Text style={styles.sectionHelp}>
+            Saved: Gold {gmText(selectedRow.goldWeight)} | Silver {kgTextFromGm(selectedRow.silverWeight)}
+          </Text>
+        ) : null}
+        <Pressable onPress={onSave} style={styles.button}>
+          <Text style={styles.buttonText}>Save market stock</Text>
+        </Pressable>
+      </View>
+
+      <Section title="Date wise balance" />
+      <SearchBox placeholder="Search date or note" value={search} onChangeText={setSearch} />
+      <View style={styles.recentList}>
+        {filteredRows.length ? (
+          filteredRows.map((row) => (
+            <View key={row.id} style={styles.marketRow}>
+              <View style={styles.billRowMain}>
+                <Text style={styles.recentBillNo}>{formatDateForBill(row.runDate)}</Text>
+                <Text style={styles.recentCustomer}>{row.note || `${row.billCount} bills created`}</Text>
+              </View>
+              <View style={styles.marketGrid}>
+                <SummaryTile label="Gold taken" value={gmText(row.goldWeight)} />
+                <SummaryTile label="Gold sold" value={gmText(row.goldSold)} />
+                <SummaryTile label="Gold balance" value={gmText(row.goldRemaining)} />
+                <SummaryTile label="Silver taken" value={kgTextFromGm(row.silverWeight)} />
+                <SummaryTile label="Silver sold" value={kgTextFromGm(row.silverSold)} />
+                <SummaryTile label="Silver balance" value={kgTextFromGm(row.silverRemaining)} />
+              </View>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.emptyText}>{rows.length ? 'Search me market entry nahi mili.' : 'Abhi market stock entry nahi hai.'}</Text>
+        )}
+      </View>
+    </ScrollView>
+  );
+}
 
 function BackupScreen({
   backupMessage,
@@ -5210,7 +5529,7 @@ function BackupScreen({
         <Pressable onPress={onCreateBackup} style={[styles.button, styles.addItemButton]}>
           <Text style={styles.buttonText}>{isPwaBackup ? 'Backup to Supabase' : 'Create backup'}</Text>
         </Pressable>
-        <Pressable onPress={onRestoreLatest} style={styles.addItemAction}>
+        <Pressable onPress={onRestoreLatest} style={[styles.button, styles.secondaryButton, styles.addItemButton]}>
           <Text style={styles.secondaryButtonText}>{isPwaBackup ? 'Restore from Supabase' : 'Restore latest backup'}</Text>
         </Pressable>
         <Text style={styles.syncMessage}>{backupMessage || 'Backup ready hone ke baad yahan status dikhega.'}</Text>
@@ -5229,6 +5548,7 @@ function ItemNamesScreen({
   onCreateItemName: (name: string, material: MetalType) => Promise<boolean>;
 }) {
   const [name, setName] = useState('');
+  const [material, setMaterial] = useState<MetalType>('gold');
   const [search, setSearch] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const filteredItemNames = useMemo(
@@ -5239,7 +5559,7 @@ function ItemNamesScreen({
   async function saveItemName() {
     setIsSaving(true);
     try {
-      const ok = await onCreateItemName(name, 'silver');
+      const ok = await onCreateItemName(name, material);
       if (ok) {
         setName('');
       }
@@ -5255,6 +5575,10 @@ function ItemNamesScreen({
         <Text style={styles.panelTitle}>Create item name</Text>
         <View style={styles.formGrid}>
           <Field label="Item name" value={name} onChangeText={setName} />
+          <View style={styles.segmentBlock}>
+            <Text style={styles.fieldLabel}>Gold / Silver</Text>
+            <MetalSelector material={material} onChange={setMaterial} />
+          </View>
         </View>
         <Pressable disabled={isSaving} onPress={() => void saveItemName()} style={styles.button}>
           <Text style={styles.buttonText}>{isSaving ? 'Saving...' : 'Save item name'}</Text>
@@ -5286,10 +5610,8 @@ function BillViewScreen({
   onSaveTransaction,
   onShareCustomer,
   onShareOther,
-  onConvertToEstimate,
   payload,
   transactions,
-  returns = [],
 }: {
   billId: string | null;
   onBack: () => void;
@@ -5297,10 +5619,8 @@ function BillViewScreen({
   onSaveTransaction: (input: BillTransactionFormInput) => Promise<void>;
   onShareCustomer: () => void;
   onShareOther: () => void;
-  onConvertToEstimate?: (payload: BillPayload) => void;
   payload: BillPayload;
   transactions: BillTransaction[];
-  returns?: (JangadReturnVoucher & { items: JangadReturnItem[] })[];
 }) {
   const [showEditMenu, setShowEditMenu] = useState(false);
   const [transactionMode, setTransactionMode] = useState<BillTransactionMode>('cash');
@@ -5344,7 +5664,7 @@ function BillViewScreen({
         <View style={styles.viewTitleBlock}>
           <Text numberOfLines={2} style={styles.screenTitle}>{billDocumentName(payload)}</Text>
           <Text style={styles.viewSubTitle}>
-            {payload.billType === 'jangad' ? 'Jangad bill book' : 'Estimate bill book'}
+            {payload.billType === 'wholesale' ? 'Professional invoice' : 'Estimate bill book'}
           </Text>
         </View>
         <Pressable onPress={() => setShowEditMenu((current) => !current)} style={styles.editIconButton}>
@@ -5372,83 +5692,579 @@ function BillViewScreen({
           <Pressable onPress={onShareOther} style={styles.smallButton}>
             <Text style={styles.smallButtonText}>Share PDF</Text>
           </Pressable>
-          {payload.billType === 'jangad' && onConvertToEstimate ? (
-            <Pressable onPress={() => onConvertToEstimate(payload)} style={styles.smallButton}>
-              <Text style={styles.smallButtonText}>Make estimate bill</Text>
-            </Pressable>
-          ) : null}
         </View>
       ) : null}
 
       <BillPreviewFrame payload={payload} transactions={transactions} />
 
-      {payload.billType === 'jangad' && returns.length > 0 ? (
-        <View style={styles.panel}>
-          <Text style={styles.panelTitle}>Returns ({returns.length})</Text>
-          <View style={styles.totalGrid}>
-             {(() => {
-               const totalPcs = returns.reduce((s, v) => s + v.items.reduce((ss, i) => ss + i.pcs, 0), 0);
-               const totalWt = returns.reduce((s, v) => s + v.items.reduce((ss, i) => ss + i.weight, 0), 0);
-               const originalPcs = payload.items.reduce((s, i) => s + (parseInt(i.pcs) || 0), 0);
-               const originalWt = payload.items.reduce((s, i) => s + (parseFloat(i.weight) || 0), 0);
-               return (
-                 <>
-                   <TotalTile label="Returned pcs" value={String(totalPcs)} />
-                   <TotalTile label="Returned weight" value={`${formatCalcValue(totalWt, 3)} gm`} />
-                   <TotalTile label="Balance pcs" value={String(originalPcs - totalPcs)} />
-                   <TotalTile label="Balance weight" value={`${formatCalcValue(originalWt - totalWt, 3)} gm`} />
-                   <TotalTile
-                     highlight
-                     label="Return vouchers"
-                     value={String(returns.length)}
-                   />
-                 </>
-               );
-             })()}
-          </View>
-          {returns.map((v) => (
-            <View key={v.id} style={styles.returnVoucherCard}>
-              <View style={styles.returnVoucherHeader}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <Text style={styles.returnVoucherDate}>{formatDateForBill(v.returnDate)}</Text>
-                  <Text style={styles.returnVoucherMeta}>{v.items.length} items</Text>
-                </View>
-              </View>
-              <View style={styles.returnItemsTableHeader}>
-                <Text style={[styles.returnItemsTableTh, { flex: 3 }]}>Item</Text>
-                <Text style={[styles.returnItemsTableTh, { flex: 1, textAlign: 'right' }]}>Pcs</Text>
-                <Text style={[styles.returnItemsTableTh, { flex: 1, textAlign: 'right' }]}>GW</Text>
-              </View>
-              {v.items.map((item) => (
-                <View key={item.id} style={styles.returnItemsTableRow}>
-                  <Text style={[styles.returnItemsTableCell, { flex: 3 }]}>{item.itemName}</Text>
-                  <Text style={[styles.returnItemsTableCell, { flex: 1, textAlign: 'right' }]}>{item.pcs}</Text>
-                  <Text style={[styles.returnItemsTableCell, { flex: 1, textAlign: 'right' }]}>{formatCalcValue(item.weight, 3)}</Text>
-                </View>
-              ))}
-              {v.note ? (
-                <View style={styles.returnVoucherNoteRow}>
-                  <Text style={styles.returnVoucherNoteLabel}>Note:</Text>
-                  <Text style={styles.returnVoucherNoteText}>{v.note}</Text>
-                </View>
-              ) : null}
-            </View>
-          ))}
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>Post-bill transactions</Text>
+        <View style={styles.totalGrid}>
+          <TotalTile label="Fine total" value={`${formatCalcValue(transactionSummary.billFineGiven, 3)} gm`} />
+          <TotalTile label="Fine cleared" value={`${formatCalcValue(transactionSummary.fineCleared, 3)} gm`} />
+          <TotalTile
+            highlight
+            label={transactionSummary.billFineAdvance > 0 ? 'Fine advance' : 'Fine remain'}
+            value={`${formatCalcValue(transactionSummary.billFineAdvance > 0 ? transactionSummary.billFineAdvance : transactionSummary.billFineBalance, 3)} gm`}
+          />
+          <TotalTile label="Cash/bank rec" value={formatBillMoney(transactionSummary.cashBankReceived, payload.autoRoundFigure)} />
+          <TotalTile highlight label="Amount due" value={formatBillMoney(transactionSummary.billLabourBalance, payload.autoRoundFigure)} />
         </View>
-      ) : null}
+
+        <View style={styles.segmentBlock}>
+          <Text style={styles.fieldLabel}>Entry type</Text>
+          <TransactionModeSelector mode={transactionMode} onChange={setTransactionMode} />
+        </View>
+        <View style={styles.formGrid}>
+          <DateField label="Date" value={transactionDate} onChangeText={setTransactionDate} />
+          {transactionMode === 'cash' || transactionMode === 'split' ? (
+            <Field
+              keyboardType="decimal-pad"
+              label="Cash amount"
+              selectTextOnFocus
+              value={transactionCash}
+              onChangeText={setTransactionCash}
+            />
+          ) : null}
+          {transactionMode === 'bank' || transactionMode === 'split' ? (
+            <Field
+              keyboardType="decimal-pad"
+              label="Bank amount"
+              selectTextOnFocus
+              value={transactionBank}
+              onChangeText={setTransactionBank}
+            />
+          ) : null}
+          {transactionMode === 'fine' ? (
+            <Field
+              keyboardType="decimal-pad"
+              label="Fine received (gm)"
+              selectTextOnFocus
+              value={transactionFine}
+              onChangeText={setTransactionFine}
+            />
+          ) : null}
+          <Field label="Note" value={transactionNote} onChangeText={setTransactionNote} />
+        </View>
+        <Pressable
+          disabled={!billId || isTransactionSaving}
+          onPress={() => void saveTransaction()}
+          style={[styles.button, (!billId || isTransactionSaving) && styles.disabledButton]}
+        >
+          <Text style={styles.buttonText}>{isTransactionSaving ? 'Saving...' : 'Save transaction'}</Text>
+        </Pressable>
+
+        <View style={styles.transactionList}>
+          {transactions.length ? (
+            transactions.map((transaction) => {
+              const parts = [
+                transaction.cashAmount > 0 ? `Cash ${formatBillMoney(transaction.cashAmount, payload.autoRoundFigure)}` : '',
+                transaction.bankAmount > 0 ? `Bank ${formatBillMoney(transaction.bankAmount, payload.autoRoundFigure)}` : '',
+                transaction.fineWeight > 0 ? `Fine ${formatCalcValue(transaction.fineWeight, 3)} gm` : '',
+        transaction.rateCutFine > 0
+          ? `Rate cut amount ${formatCalcValue(transaction.rateCutFine, 3)} gm = ${formatBillMoney(transaction.rateCutAmount, payload.autoRoundFigure)}`
+                  : '',
+              ].filter(Boolean);
+              return (
+                <View key={transaction.id} style={styles.transactionRow}>
+                  <View style={styles.billRowMain}>
+                    <Text style={styles.recentBillNo}>
+                      {billTransactionModeLabel(transaction.mode)} - {formatDateForBill(transaction.transactionDate)}
+                    </Text>
+                    <Text style={styles.recentCustomer}>{parts.join(' | ') || 'No amount'}</Text>
+                    {transaction.note ? <Text style={styles.recentSync}>{transaction.note}</Text> : null}
+                  </View>
+                </View>
+              );
+            })
+          ) : (
+            <Text style={styles.emptyText}>Abhi post-bill transaction nahi hai.</Text>
+          )}
+        </View>
+      </View>
     </ScrollView>
   );
 }
 
+function BillScreen({
+  billDate,
+  billNo,
+  autoRoundFigure,
+  billPayload,
+  customer,
+  discountAmount,
+  discountInputValue,
+  draftItems,
+  goldRate,
+  isSaving,
+  itemNameOptions,
+  language,
+  lastSavedPayload,
+  onAddItem,
+  onBack,
+  onBillDateChange,
+  onBillNoChange,
+  onAutoRoundFigureChange,
+  onCustomerChange,
+  onDiscountAmountChange,
+  onFinalAmountOverrideChange,
+  onCreateItemName,
+  onItemChange,
+  onLanguageChange,
+  onGoldRateChange,
+  onReceiptCashChange,
+  onReceiptGrossWeightChange,
+  onReceiptMaterialChange,
+  onReceiptTouchChange,
+  onReceiptTypeChange,
+  onRateCutAmountChange,
+  onRateCutAdjustsLabourChange,
+  onRateCutFineChange,
+  onRemoveItem,
+  onReminderDaysChange,
+  onReminderEnabledChange,
+  onReminderTimeChange,
+  onSaveBill,
+  onSelectPartySuggestion,
+  onShareSaved,
+  onShareSavedToCustomer,
+  onSilverRateChange,
+  partyFolders,
+  rates,
+  receiptMaterial,
+  receiptType,
+  rateCutAmount,
+  rateCutAdjustsLabour,
+  rateCutAutoAmount,
+  rateCutBookedLabel,
+  rateCutFine,
+  reminderDays,
+  reminderEnabled,
+  reminderTime,
+  receivedCash,
+  finalAmountOverride,
+  receivedFine,
+  receivedGrossWeight,
+  receivedTouch,
+  silverRate,
+  totals,
+}: {
+  billDate: string;
+  billNo: number;
+  autoRoundFigure: boolean;
+  billPayload: BillPayload;
+  customer: CustomerDraft;
+  discountAmount: string;
+  discountInputValue: string;
+  draftItems: BillItemDraft[];
+  goldRate: string;
+  isSaving: boolean;
+  itemNameOptions: ItemNameOption[];
+  language: Language;
+  lastSavedPayload: BillPayload | null;
+  onAddItem: () => void;
+  onBack: () => void;
+  onBillDateChange: (value: string) => void;
+  onBillNoChange: (value: string) => void;
+  onAutoRoundFigureChange: (value: boolean) => void;
+  onCustomerChange: (key: keyof CustomerDraft, value: string) => void;
+  onDiscountAmountChange: (value: string) => void;
+  onFinalAmountOverrideChange: (value: string) => void;
+  onCreateItemName: (name: string, material: MetalType) => Promise<boolean>;
+  onItemChange: (index: number, key: keyof BillItemDraft, value: string) => void;
+  onLanguageChange: (value: Language) => void;
+  onGoldRateChange: (value: string) => void;
+  onReceiptCashChange: (value: string) => void;
+  onReceiptGrossWeightChange: (value: string) => void;
+  onReceiptMaterialChange: (value: MetalType) => void;
+  onReceiptTouchChange: (value: string) => void;
+  onReceiptTypeChange: (value: ReceiptType) => void;
+  onRateCutAmountChange: (value: string) => void;
+  onRateCutAdjustsLabourChange: (value: boolean) => void;
+  onRateCutFineChange: (value: string) => void;
+  onRemoveItem: (index: number) => void;
+  onReminderDaysChange: (value: string) => void;
+  onReminderEnabledChange: (value: boolean) => void;
+  onReminderTimeChange: (value: string) => void;
+  onSaveBill: () => void;
+  onSelectPartySuggestion: (folder: PartyFolder) => void;
+  onShareSaved: () => void;
+  onShareSavedToCustomer: () => void;
+  onSilverRateChange: (value: string) => void;
+  partyFolders: PartyFolder[];
+  rates: MetalRates;
+  receiptMaterial: MetalType;
+  receiptType: ReceiptType;
+  rateCutAmount: string;
+  rateCutAdjustsLabour: boolean;
+  rateCutAutoAmount: number;
+  rateCutBookedLabel: string;
+  rateCutFine: string;
+  reminderDays: string;
+  reminderEnabled: boolean;
+  reminderTime: string;
+  receivedCash: string;
+  finalAmountOverride: string;
+  receivedFine: string;
+  receivedGrossWeight: string;
+  receivedTouch: string;
+  silverRate: string;
+  totals: {
+    autoNetTotal: number;
+    baseLabourSubtotal: number;
+    discountValue: number;
+    finalAmountOverride: string;
+    netTotal: number;
+    rateCutValue: number;
+    receivedValue: number;
+    roundFigureEnabled: boolean;
+    roundedNetTotal: number;
+    subtotal: number;
+  };
+}) {
+  const [hiddenPartySuggestionIds, setHiddenPartySuggestionIds] = useState<string[]>([]);
+  const [collapsedItemIds, setCollapsedItemIds] = useState<string[]>([]);
+  const partySuggestionQuery = customer.name.trim();
+  const selectedPartyFolder = useMemo(
+    () => (customer.id ? partyFolders.find((folder) => folder.customerId === customer.id) ?? null : null),
+    [customer.id, partyFolders],
+  );
+  const partySuggestions = useMemo(
+    () =>
+      partySuggestionQuery
+        ? partyFolders
+            .filter((folder) => !hiddenPartySuggestionIds.includes(folder.customerId))
+            .filter((folder) => folder.customerId !== customer.id)
+            .filter((folder) => partyMatchesSearch(folder, partySuggestionQuery))
+            .slice(0, 6)
+        : [],
+    [customer.id, hiddenPartySuggestionIds, partyFolders, partySuggestionQuery],
+  );
+  const effectiveRateCutAmount = rateCutAmount.trim() ? parseAmount(rateCutAmount) : rateCutAutoAmount;
+  const hasRateCutFine = parseAmount(rateCutFine) > 0;
+  const createBookedRateLines = rateSummaryLines(billPayload.items);
+  const createFineTotal = calculateTotalFine(billPayload.items);
+  const createLabourTotal = totals.baseLabourSubtotal;
 
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <View style={styles.topNav}>
+        <Pressable onPress={onBack} style={[styles.button, styles.secondaryButton, styles.navButton]}>
+          <Text style={styles.secondaryButtonText}>Back</Text>
+        </Pressable>
+        <Text numberOfLines={2} style={styles.screenTitle}>Create bill</Text>
+      </View>
 
+      <Section title="Transaction rates" />
+      <View style={styles.panel}>
+        <View style={styles.createTopRateStrip}>
+          <View style={styles.createTopRateItem}>
+            <Text style={styles.createTopRateLabel}>Gold / 10 gm</Text>
+            <Text style={styles.createTopRateValue}>{formatBillMoney(goldRate, false)}</Text>
+          </View>
+          <View style={styles.createTopRateItem}>
+            <Text style={styles.createTopRateLabel}>Silver / 1 kg</Text>
+            <Text style={styles.createTopRateValue}>{formatBillMoney(silverRate, false)}</Text>
+          </View>
+        </View>
+        <View style={styles.formGrid}>
+          <Field keyboardType="numeric" label="Gold 10g for this bill" selectTextOnFocus value={goldRate} onChangeText={onGoldRateChange} />
+          <Field keyboardType="numeric" label="Silver 1kg for this bill" selectTextOnFocus value={silverRate} onChangeText={onSilverRateChange} />
+        </View>
+      </View>
 
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>Bill setup</Text>
+        <View style={styles.formGrid}>
+          <Field label={t(language, 'billNo')} value={String(billNo)} onChangeText={onBillNoChange} />
+        <DateField label={t(language, 'date')} value={billDate} onChangeText={onBillDateChange} />
+        </View>
+        <View style={styles.formGrid}>
+          <View style={styles.segmentBlock}>
+            <Text style={styles.fieldLabel}>{t(language, 'language')}</Text>
+            <LanguageSelector language={language} onChange={onLanguageChange} />
+          </View>
+        </View>
+      </View>
 
+      <Section title="Party" />
+      <View style={styles.panel}>
+        <View style={styles.formGrid}>
+          <Field label={t(language, 'name')} value={customer.name} onChangeText={(value) => onCustomerChange('name', value)} />
+          <Field
+            keyboardType="phone-pad"
+            label={t(language, 'mobile')}
+            value={customer.mobile}
+            onChangeText={(value) => onCustomerChange('mobile', value)}
+          />
+          <Field
+            label={t(language, 'address')}
+            multiline
+            value={customer.address}
+            onChangeText={(value) => onCustomerChange('address', value)}
+          />
+        </View>
+        {selectedPartyFolder ? (
+          <View style={styles.selectedPartyBadge}>
+            <Text style={styles.selectedPartyText}>Existing party: {selectedPartyFolder.customerName}</Text>
+          </View>
+        ) : null}
+        {partySuggestions.length ? (
+          <View style={styles.partySuggestionList}>
+            {partySuggestions.map((folder) => (
+              <View key={folder.customerId} style={styles.partySuggestionRow}>
+                <Pressable
+                  onPress={() => onSelectPartySuggestion(folder)}
+                  style={styles.partySuggestionBody}
+                >
+                  <Text style={styles.partySuggestionName}>{folder.customerName}</Text>
+                  <Text style={styles.partySuggestionMeta}>
+                    {folder.billCount} bills | {folder.customerMobile || 'No mobile'} | {folder.customerAddress || 'No address'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() =>
+                    setHiddenPartySuggestionIds((current) =>
+                      current.includes(folder.customerId) ? current : [...current, folder.customerId],
+                    )
+                  }
+                  style={styles.partySuggestionHide}
+                >
+                  <Text style={styles.partySuggestionHideText}>x</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
 
+      <Section title={t(language, 'items')} />
+      {billPayload.items.map((item, index) => (
+        collapsedItemIds.includes(item.id) ? (
+          <Pressable
+            key={item.id}
+            onPress={() => setCollapsedItemIds((current) => current.filter((id) => id !== item.id))}
+            style={styles.collapsedItemRow}
+          >
+            <Text style={styles.collapsedItemTitle}>- Item {index + 1}: {item.itemName || 'Blank item'}</Text>
+            <Text style={styles.collapsedItemMeta}>
+              {formatCalcValue(parseAmount(item.fine), 3) || '0'} gm fine | {formatBillMoney(item.amount, autoRoundFigure)}
+            </Text>
+          </Pressable>
+        ) : (
+          <ItemEditor
+            index={index}
+            item={item}
+            itemNameOptions={itemNameOptions}
+            key={item.id}
+            language={language}
+            rateInputValue={draftItems[index]?.rate ?? item.rate}
+            autoRoundFigure={autoRoundFigure}
+            onChange={onItemChange}
+            onCreateItemName={onCreateItemName}
+            onRemove={onRemoveItem}
+            rates={rates}
+            removable={billPayload.items.length > 1}
+          />
+        )
+      ))}
+
+      <Pressable
+        onPress={() => {
+          setCollapsedItemIds((current) => [...new Set([...current, ...billPayload.items.map((item) => item.id)])]);
+          onAddItem();
+        }}
+        style={[styles.button, styles.secondaryButton, styles.addItemButton]}
+      >
+        <Text style={styles.secondaryButtonText}>{t(language, 'addItem')}</Text>
+      </Pressable>
+
+      <Section title="Fine / cash received" />
+      <View style={styles.panel}>
+        <ReceiptTypeSelector receiptType={receiptType} onChange={onReceiptTypeChange} />
+        {receiptHasFine(receiptType) ? (
+          <View style={styles.formGrid}>
+            <View style={styles.segmentBlock}>
+              <Text style={styles.fieldLabel}>Fine metal</Text>
+              <MetalSelector material={receiptMaterial} onChange={onReceiptMaterialChange} />
+            </View>
+            <Field
+              keyboardType="decimal-pad"
+              label="Received GW (gm)"
+              selectTextOnFocus
+              value={receivedGrossWeight}
+              onChangeText={onReceiptGrossWeightChange}
+            />
+            <Field keyboardType="decimal-pad" label="Touch %" selectTextOnFocus value={receivedTouch} onChangeText={onReceiptTouchChange} />
+            <Field editable={false} label="Fine calculated (gm)" value={receivedFine || '0'} onChangeText={() => undefined} />
+          </View>
+        ) : null}
+        {receiptHasCash(receiptType) ? (
+          <Field keyboardType="decimal-pad" label="Cash received for labour" selectTextOnFocus value={receivedCash} onChangeText={onReceiptCashChange} />
+        ) : null}
+        <View style={styles.formGrid}>
+          <Field
+            keyboardType="decimal-pad"
+            label="Rate cut fine less (gm)"
+            selectTextOnFocus
+            value={rateCutFine}
+            onChangeText={onRateCutFineChange}
+          />
+          <Field
+            keyboardType="decimal-pad"
+            label="Rate cut amount"
+            selectTextOnFocus
+            value={rateCutAmount}
+            onChangeText={onRateCutAmountChange}
+          />
+          <Field
+            keyboardType="decimal-pad"
+            label="Discount amount"
+            selectTextOnFocus
+            value={discountInputValue}
+            onChangeText={onDiscountAmountChange}
+          />
+        </View>
+        {hasRateCutFine ? (
+          <View style={styles.compactHelpBlock}>
+            <Text style={styles.sectionHelp}>
+              Suggested by booked rate: {formatBillMoney(rateCutAutoAmount, false)} | {rateCutBookedLabel}
+            </Text>
+            {effectiveRateCutAmount > 0 ? (
+              <Text style={styles.sectionHelp}>
+                (Added in labour: {formatBillMoney(effectiveRateCutAmount, totals.roundFigureEnabled)})
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+        <View style={styles.formGrid}>
+          <View style={styles.segmentBlock}>
+            <Text style={styles.fieldLabel}>Auto round figure</Text>
+            <RoundFigureSelector enabled={autoRoundFigure} onChange={onAutoRoundFigureChange} />
+          </View>
+          <Field
+            keyboardType="decimal-pad"
+            label="Final amount override"
+            selectTextOnFocus
+            value={finalAmountOverride}
+            onChangeText={onFinalAmountOverrideChange}
+          />
+        </View>
+        <View style={styles.totalGrid}>
+          <TotalTile label="Base labour" value={formatBillMoney(totals.baseLabourSubtotal, totals.roundFigureEnabled)} />
+          <TotalTile label="Amount received" value={formatBillMoney(totals.receivedValue, totals.roundFigureEnabled)} />
+          {hasRateCutFine ? (
+            <TotalTile label="Rate cut amount" value={formatBillMoney(totals.rateCutValue, totals.roundFigureEnabled)} />
+          ) : null}
+          {totals.discountValue > 0 ? (
+            <TotalTile label="Discount" value={formatBillMoney(totals.discountValue, totals.roundFigureEnabled)} />
+          ) : null}
+          {totals.finalAmountOverride ? <TotalTile label="Auto net" value={formatBillMoney(totals.autoNetTotal)} /> : null}
+          <TotalTile highlight label="Amount due" value={formatBillMoney(totals.netTotal, totals.roundFigureEnabled)} />
+        </View>
+        <View style={styles.createRateCutBaseBar}>
+          <Text style={styles.createRateCutBaseTitle}>Rate cut base</Text>
+          <View style={styles.createRateCutBaseGrid}>
+            <Text style={styles.createRateCutBaseText}>Fine total: {formatCalcValue(createFineTotal, 3) || '0'} gm</Text>
+            <Text style={styles.createRateCutBaseText}>
+              Labour total: {formatBillMoney(createLabourTotal, totals.roundFigureEnabled)}
+            </Text>
+          </View>
+          {createBookedRateLines.length ? (
+            <View style={styles.createBookedRateList}>
+              {createBookedRateLines.map((line) => (
+                <Text key={line} style={styles.createBookedRateText}>
+                  {line}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      </View>
+
+      <Section title="Fine reminder mohalt" />
+      <View style={styles.panel}>
+        <View style={styles.formGrid}>
+          <View style={styles.segmentBlock}>
+            <Text style={styles.fieldLabel}>Reminder</Text>
+            <RoundFigureSelector enabled={reminderEnabled} onChange={onReminderEnabledChange} />
+          </View>
+          <Field
+            keyboardType="number-pad"
+            label="Mohlat days"
+            selectTextOnFocus
+            value={reminderDays}
+            onChangeText={onReminderDaysChange}
+          />
+          <Field label="Reminder time" selectTextOnFocus value={reminderTime} onChangeText={onReminderTimeChange} />
+        </View>
+        <Text style={styles.sectionHelp}>
+          Reminder due: {formatDateTime(buildDueAtFromBillDate(billDate, reminderDays, reminderTime))}
+        </Text>
+      </View>
+
+      <View style={styles.actionBar}>
+        <Pressable disabled={isSaving} onPress={onSaveBill} style={styles.button}>
+          <Text style={styles.buttonText}>{isSaving ? 'Saving...' : t(language, 'saveBill')}</Text>
+        </Pressable>
+        <Pressable
+          disabled={!lastSavedPayload}
+          onPress={onShareSaved}
+          style={[styles.button, styles.printButton, !lastSavedPayload && styles.disabledButton]}
+        >
+          <Text style={styles.buttonText}>Other share</Text>
+        </Pressable>
+        <Pressable
+          disabled={!lastSavedPayload}
+          onPress={onShareSavedToCustomer}
+          style={[styles.button, styles.customerShareButton, !lastSavedPayload && styles.disabledButton]}
+        >
+          <Text style={styles.buttonText}>Customer share</Text>
+        </Pressable>
+      </View>
+
+      <Section title="Preview" />
+      <BillPreviewFrame payload={billPayload} />
+    </ScrollView>
+  );
+}
+
+function RateHero({
+  goldRate,
+  language,
+  latestRate,
+  silverRate,
+}: {
+  goldRate: string;
+  language: Language;
+  latestRate: Rate | null;
+  silverRate: string;
+}) {
+  return (
+    <View style={styles.hero}>
+      <View style={styles.heroTop}>
+        <View style={styles.heroBrand}>
+          <BrandLogo size={42} />
+          <View>
+            <Text style={styles.appTitle}>{SHOP.name}</Text>
+            <Text style={styles.heroTitle}>{t(language, 'heroTitle')}</Text>
+            <Text style={styles.heroSubtitle}>{t(language, 'heroSubtitle')}</Text>
+          </View>
+        </View>
+        <View style={styles.syncPill}>
+          <Text style={styles.syncPillText}>{latestRate?.syncStatus === 'synced' ? 'Synced' : 'Local'}</Text>
+        </View>
+      </View>
+      <View style={styles.rateTiles}>
+        <RateTile label="Gold" metric="10 gram" value={formatMoney(goldRate)} />
+        <RateTile label="Silver" metric="1 kg" tone="silver" value={formatMoney(silverRate)} />
+      </View>
+    </View>
+  );
+}
 
 function ItemEditor({
   autoRoundFigure,
-  billType,
   index,
   item,
   itemNameOptions,
@@ -5456,13 +6272,11 @@ function ItemEditor({
   onChange,
   onCreateItemName,
   onRemove,
-  onDone,
   rates,
   rateInputValue,
   removable,
 }: {
   autoRoundFigure: boolean;
-  billType: BillType;
   index: number;
   item: BillItemDraft;
   itemNameOptions: ItemNameOption[];
@@ -5470,7 +6284,6 @@ function ItemEditor({
   onChange: (index: number, key: keyof BillItemDraft, value: string) => void;
   onCreateItemName: (name: string, material: MetalType) => Promise<boolean>;
   onRemove: (index: number) => void;
-  onDone: () => void;
   rates: MetalRates;
   rateInputValue: string;
   removable: boolean;
@@ -5489,189 +6302,205 @@ function ItemEditor({
       ),
     [item.material, itemNameOptions, suggestionQuery],
   );
-  
-  const showSuggestionBar = !suggestionsDismissed && (showItemNames || !!itemSearch.trim());
+  const typedItemExists = useMemo(
+    () =>
+      !item.itemName.trim() ||
+      itemNameOptions.some(
+        (option) =>
+          option.material === item.material &&
+          option.name.trim().toLowerCase() === item.itemName.trim().toLowerCase(),
+      ),
+    [item.itemName, item.material, itemNameOptions],
+  );
+  const showSuggestionBar = !suggestionsDismissed && (showItemNames || !!item.itemName.trim() || !!itemSearch.trim());
 
   return (
-    <Modal visible animationType="slide">
-      <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
-        {/* Fixed Header Layout matching screenshot */}
-        <View style={{ 
-          height: 56, 
-          flexDirection: 'row', 
-          alignItems: 'center', 
-          justifyContent: 'space-between', 
-          paddingHorizontal: 16, 
-          borderBottomWidth: 1, 
-          borderBottomColor: '#edf2f7' 
-        }}>
-           <Text style={{ fontSize: 18, fontWeight: '700', color: '#263238' }}>Item {index + 1}</Text>
-           <Pressable 
-              onPress={onDone} 
-              style={{ 
-                paddingVertical: 6, 
-                paddingHorizontal: 16, 
-                borderWidth: 1, 
-                borderColor: '#ffc107', 
-                borderRadius: 6 
-              }}
-           >
-              <Text style={{ color: '#007a66', fontWeight: '700', fontSize: 14 }}>Close</Text>
-           </Pressable>
+    <View style={styles.itemCard}>
+      <View style={styles.itemCardHeader}>
+        <Text style={styles.itemCardTitle}>
+          {t(language, 'item')} {index + 1}
+        </Text>
+        {removable ? (
+          <Pressable onPress={() => onRemove(index)} style={styles.removeButton}>
+            <Text style={styles.removeButtonText}>Remove</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      <View style={styles.formGrid}>
+        <View style={styles.segmentBlock}>
+          <Text style={styles.fieldLabel}>Gold / Silver</Text>
+          <MetalSelector material={item.material} onChange={(value) => onChange(index, 'material', value)} />
         </View>
-
-        <ScrollView contentContainerStyle={{ padding: 16 }} keyboardShouldPersistTaps="handled">
-          <View style={styles.itemCard}>
-            <Text style={{ fontSize: 14, fontWeight: '700', color: '#2d3748', marginBottom: 12 }}>Item {index + 1}</Text>
-            
-            <View style={styles.formGrid}>
-               <View style={styles.fieldWide}>
-                  <Field
-                    label="Item"
-                    value={item.itemName}
-                    onChangeText={(value) => {
-                      onChange(index, 'itemName', value);
-                      setItemSearch(value);
-                      setShowItemNames(true);
-                      setSuggestionsDismissed(false);
-                    }}
-                  />
-               </View>
+        <View style={styles.fieldWide}>
+          <View style={styles.itemNameRow}>
+            <View style={styles.itemNameInputWrap}>
+              <Field
+                label={t(language, 'item')}
+                value={item.itemName}
+                onChangeText={(value) => {
+                  onChange(index, 'itemName', value);
+                  setItemSearch(value);
+                  setShowItemNames(true);
+                  setSuggestionsDismissed(false);
+                }}
+              />
             </View>
-
-            {/* Buttons matching screenshot colors and layout */}
-            <View style={{ flexDirection: 'row', gap: 12, marginBottom: 16 }}>
-               <Pressable 
-                  onPress={() => {
-                    setShowItemNames(!showItemNames);
+            <View style={styles.itemNameButtonRow}>
+              <Pressable
+                onPress={() => {
+                  if (showSuggestionBar) {
+                    setSuggestionsDismissed(true);
+                    setShowItemNames(false);
+                  } else {
+                    setSuggestionsDismissed(false);
+                    setShowItemNames(true);
+                  }
+                }}
+                style={styles.itemNameToggle}
+              >
+                <Text style={styles.itemNameToggleText}>{showSuggestionBar ? 'Hide list' : 'Item list'}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void onCreateItemName(item.itemName, item.material)}
+                style={[styles.itemNameToggle, styles.itemNameSaveButton]}
+              >
+                <Text style={styles.itemNameToggleText}>Save</Text>
+              </Pressable>
+            </View>
+          </View>
+          {showSuggestionBar ? (
+            <View style={styles.itemNameSlidePanel}>
+              <View style={styles.itemNameSearchRow}>
+                <TextInput
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  clearButtonMode="while-editing"
+                  onChangeText={(value) => {
+                    setItemSearch(value);
+                    if (value.trim()) {
+                      setShowItemNames(true);
+                    }
                     setSuggestionsDismissed(false);
                   }}
-                  style={{ flex: 1, backgroundColor: '#007a66', paddingVertical: 12, borderRadius: 8, alignItems: 'center' }}
-               >
-                  <Text style={{ color: '#fff', fontWeight: '700' }}>Item list</Text>
-               </Pressable>
-               <Pressable 
-                  onPress={async () => {
-                     if (item.itemName.trim()) {
-                        await onCreateItemName(item.itemName, item.material);
-                     }
-                     onDone();
-                  }}
-                  style={{ flex: 1, backgroundColor: '#007a66', paddingVertical: 12, borderRadius: 8, alignItems: 'center' }}
-               >
-                  <Text style={{ color: '#fff', fontWeight: '700' }}>Save</Text>
-               </Pressable>
-            </View>
-
-            {showSuggestionBar ? (
-              <View style={{ 
-                backgroundColor: '#f7fafc', 
-                borderRadius: 8, 
-                borderWidth: 1, 
-                borderColor: '#edf2f7', 
-                marginBottom: 16,
-                maxHeight: 200,
-                overflow: 'hidden'
-              }}>
-                 <ScrollView nestedScrollEnabled>
-                    {visibleItemNames.map(opt => (
-                       <Pressable 
-                          key={opt.id} 
-                          onPress={() => {
-                             onChange(index, 'itemName', opt.name);
-                             setShowItemNames(false);
-                             setItemSearch('');
-                          }}
-                          style={{ 
-                            padding: 14, 
-                            borderBottomWidth: 1, 
-                            borderBottomColor: '#edf2f7',
-                            backgroundColor: item.itemName === opt.name ? '#ebf8ff' : 'transparent'
-                          }}
-                       >
-                          <Text style={{ color: '#2d3748', fontWeight: item.itemName === opt.name ? '700' : '400' }}>{opt.name}</Text>
-                       </Pressable>
-                    ))}
-                    {visibleItemNames.length === 0 && (
-                      <View style={{ padding: 16, alignItems: 'center' }}>
-                        <Text style={{ color: '#718096', fontSize: 13 }}>No items found in list.</Text>
-                      </View>
-                    )}
-                 </ScrollView>
+                  placeholder="Search item name"
+                  placeholderTextColor="#9a8f85"
+                  style={styles.itemNameSearchInput}
+                  value={itemSearch}
+                />
               </View>
-            ) : null}
-
-            <View style={styles.formGrid}>
-               <Field
-                  keyboardType="decimal-pad"
-                  label="Weight gross (gm)"
-                  value={item.weight}
-                  onChangeText={(value) => onChange(index, 'weight', value)}
-                />
-                <Field
-                  keyboardType="number-pad"
-                  label="Pcs"
-                  value={item.pcs}
-                  onChangeText={(value) => onChange(index, 'pcs', value)}
-                />
-                {billType === 'estimate' ? (
-                  <>
-                <Field
-                  keyboardType="decimal-pad"
-                  label="Packet/box less (gm)"
-                  value={item.packetLess}
-                  onChangeText={(value) => onChange(index, 'packetLess', value)}
-                />
-                <Field
-                  keyboardType="decimal-pad"
-                  label="Touch %"
-                  value={item.touch}
-                  onChangeText={(value) => onChange(index, 'touch', value)}
-                />
-                <View style={[styles.segmentBlock, { marginBottom: 12 }]}>
-                  <Text style={styles.fieldLabel}>Labour type</Text>
-                  <LabourTypeSelector labourType={item.labourType || 'gw'}
-                    onChange={(value) => onChange(index, 'labourType', value)}
-                  />
-                </View>
-                <Field
-                  keyboardType="decimal-pad"
-                  label="Labour"
-                  value={item.labour}
-                  onChangeText={(value) => onChange(index, 'labour', value)}
-                />
-                <Field
-                  keyboardType="decimal-pad"
-                  label="Rate/gm"
-                  value={rateInputValue}
-                  onChangeText={(value) => onChange(index, 'rate', value)}
-                />
-                  </>
+              <ScrollView
+                nestedScrollEnabled
+                showsVerticalScrollIndicator
+                style={styles.itemNameVerticalScroll}
+                contentContainerStyle={styles.itemNameVerticalList}
+              >
+                {!typedItemExists ? (
+                  <Pressable
+                    onPress={async () => {
+                      const ok = await onCreateItemName(item.itemName, item.material);
+                      if (ok) {
+                        setItemSearch(item.itemName);
+                        setShowItemNames(true);
+                        setSuggestionsDismissed(false);
+                      }
+                    }}
+                    style={[styles.itemNameChip, styles.itemNameSaveChip]}
+                  >
+                    <Text numberOfLines={1} style={styles.itemNameChipText}>Save "{item.itemName.trim()}"</Text>
+                    <Text style={styles.itemNameChipMeta}>{item.material}</Text>
+                  </Pressable>
                 ) : null}
+                {visibleItemNames.length ? (
+                  visibleItemNames.map((option) => (
+                    <Pressable
+                      key={`${option.id}-${option.material}`}
+                      onPress={() => {
+                        onChange(index, 'material', option.material);
+                        onChange(index, 'itemName', option.name);
+                        setItemSearch(option.name);
+                        setShowItemNames(true);
+                        setSuggestionsDismissed(false);
+                      }}
+                      style={[
+                        styles.itemNameChip,
+                        option.name.trim().toLowerCase() === item.itemName.trim().toLowerCase() &&
+                          option.material === item.material &&
+                          styles.itemNameChipActive,
+                    ]}
+                  >
+                      <Text numberOfLines={1} style={styles.itemNameChipText}>{option.name}</Text>
+                      <Text style={styles.itemNameChipMeta}>{option.material}</Text>
+                    </Pressable>
+                  ))
+                ) : (
+                  <Text style={styles.itemNameSlideEmpty}>Item name nahi mila. Save chip dabao.</Text>
+                )}
+              </ScrollView>
             </View>
-
-            {billType === 'estimate' ? (
-            <View style={styles.calcRow}>
-              <CalcPill label="Rate/gm" value={formatMoney(parseAmount(item.rate) || rate)} />
-              <CalcPill label="Net wt" value={formatCalcValue(Math.max(parseAmount(item.weight) - parseAmount(item.packetLess), 0), 3)} />
-              <CalcPill label="Fine" value={formatCalcValue(parseAmount(item.fine), 3)} />
-              <CalcPill label="Labour" value={formatBillMoney(calculateLabourCharge(item), autoRoundFigure)} />
-            </View>
-            ) : null}
-
-            {removable && (
-               <Pressable onPress={() => { onRemove(index); onDone(); }} style={{ marginTop: 32, padding: 12, alignItems: 'center' }}>
-                  <Text style={{ color: '#e53e3e', fontWeight: '700', fontSize: 14 }}>Remove this item</Text>
-               </Pressable>
-            )}
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
+          ) : null}
+        </View>
+        <Field
+          keyboardType="decimal-pad"
+          label={`${t(language, 'weight')} gross (gm)`}
+          selectTextOnFocus
+          value={item.weight}
+          onChangeText={(value) => onChange(index, 'weight', value)}
+        />
+        <Field
+          keyboardType="decimal-pad"
+          label="Packet/box less (gm)"
+          selectTextOnFocus
+          value={item.packetLess}
+          onChangeText={(value) => onChange(index, 'packetLess', value)}
+        />
+        <Field
+          keyboardType="decimal-pad"
+          label={`${t(language, 'touch')} %`}
+          selectTextOnFocus
+          value={item.touch}
+          onChangeText={(value) => onChange(index, 'touch', value)}
+        />
+        <Field
+          keyboardType="number-pad"
+          label={t(language, 'pcs')}
+          selectTextOnFocus
+          value={item.pcs}
+          onChangeText={(value) => onChange(index, 'pcs', value)}
+        />
+        <Field
+          keyboardType="decimal-pad"
+          label="Rate/gm"
+          selectTextOnFocus
+          value={rateInputValue}
+          onChangeText={(value) => onChange(index, 'rate', value)}
+        />
+        <View style={styles.segmentBlock}>
+          <Text style={styles.fieldLabel}>Labour type</Text>
+          <LabourTypeSelector labourType={item.labourType ?? 'gw'} onChange={(value) => onChange(index, 'labourType', value)} />
+        </View>
+        <Field
+          keyboardType="decimal-pad"
+          label={(item.labourType ?? 'gw') === 'pcs' ? `${t(language, 'labour')} per pcs` : `${t(language, 'labour')} per gm GW`}
+          selectTextOnFocus
+          value={item.labour}
+          onChangeText={(value) => onChange(index, 'labour', value)}
+        />
+      </View>
+      <View style={styles.calcRow}>
+        <CalcPill label="Rate/gm" value={formatMoney(parseAmount(item.rate) || rate)} />
+        <CalcPill label="Net wt" value={`${formatCalcValue(Math.max(parseAmount(item.weight) - parseAmount(item.packetLess), 0), 3)} gm`} />
+        <CalcPill label={t(language, 'fine')} value={`${formatCalcValue(parseAmount(item.fine), 3) || '0'} gm`} />
+        <CalcPill label="Labour" value={formatBillMoney(calculateLabourCharge(item), autoRoundFigure)} />
+        <CalcPill label="Labour amount" value={formatBillMoney(item.amount, autoRoundFigure)} />
+      </View>
+      {language !== 'en' && item.itemName.trim() ? (
+        <Text style={styles.translationHint}>
+          {languageNames[language]}: {translateNameOrItem(item.itemName, language)}
+        </Text>
+      ) : null}
+    </View>
   );
 }
-
-
 
 function BillPreviewFrame({ payload, transactions = [] }: { payload: BillPayload; transactions?: BillTransaction[] }) {
   return (
@@ -5689,18 +6518,17 @@ function BillPreviewFrame({ payload, transactions = [] }: { payload: BillPayload
 
 function BillPreview({ payload, transactions = [] }: { payload: BillPayload; transactions?: BillTransaction[] }) {
   const language = payload.language;
-  function fieldHasValue(v: string) { return v.trim() && parseFloat(v) !== 0; }
   const visibleItems = payload.items.filter(
     (item) =>
       item.itemName.trim() ||
-      fieldHasValue(item.weight) ||
-      fieldHasValue(item.packetLess) ||
-      fieldHasValue(item.touch) ||
-      fieldHasValue(item.fine) ||
-      fieldHasValue(item.pcs) ||
-      fieldHasValue(item.rate) ||
-      fieldHasValue(item.labour) ||
-      fieldHasValue(item.amount),
+      item.weight.trim() ||
+      item.packetLess.trim() ||
+      item.touch.trim() ||
+      item.fine.trim() ||
+      item.pcs.trim() ||
+      item.rate.trim() ||
+      item.labour.trim() ||
+      item.amount.trim(),
   );
   const previewRows = [...visibleItems];
   const blankRows = payload.billType === 'estimate' ? (visibleItems.length >= 9 ? 1 : visibleItems.length <= 3 ? 3 : 2) : Math.max(1, 4 - visibleItems.length);
@@ -5713,7 +6541,7 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
       itemName: '',
       labour: '',
       labourType: 'gw',
-      material: 'silver',
+      material: 'gold',
       packetLess: '',
       pcs: '',
       rate: '',
@@ -5721,7 +6549,7 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
       weight: '',
     });
   }
-  const title = payload.billType === 'estimate' ? t(language, 'estimate') : t(language, 'jangadBill');
+  const title = payload.billType === 'wholesale' ? t(language, 'wholesaleBill') : t(language, 'estimate');
   const customerName = translateNameOrItem(payload.customer.name, language) || 'Customer';
   const packetLessTotal = visibleItems.reduce((total, item) => total + parseAmount(item.packetLess), 0);
   const netWeightTotal = visibleItems.reduce(
@@ -5735,7 +6563,7 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
   const labourSummary = labourSummaryLine(visibleItems, payload.autoRoundFigure);
   const bookedRateLines = rateSummaryLines(visibleItems);
   const transactionSummary = billTransactionSummary(payload, transactions);
-  const previewWeightTotal = roundWeight(visibleItems.reduce((sum, item) => sum + Math.max(parseAmount(item.weight) - parseAmount(item.packetLess), 0), 0));
+  const previewWeightTotal = visibleItems.reduce((sum, item) => sum + Math.max(parseAmount(item.weight) - parseAmount(item.packetLess), 0), 0);
   const previewItemFineTotal = calculateTotalFine(visibleItems);
   const previewPcsTotal = visibleItems.reduce((sum, item) => sum + parseAmount(item.pcs), 0);
   const rateCutSummaryAmount = transactionSummary.rateCutAmount;
@@ -5744,7 +6572,7 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
   const rateCutNotes = rateCutFooterNotes(payload, transactions);
 
   return (
-    <View style={[styles.previewCard, styles.estimatePreview]}>
+    <View style={[styles.previewCard, payload.billType === 'estimate' ? styles.estimatePreview : styles.wholesalePreview]}>
       <View style={styles.previewHeader}>
         <View>
           <Text style={styles.previewTitle}>{title}</Text>
@@ -5761,59 +6589,32 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
         <Text style={styles.previewLine}>{t(language, 'mobile')} : {payload.customer.mobile || 'Mobile'}</Text>
       </View>
 
-      {payload.billType === 'jangad' ? (
-        <View style={styles.previewBillTable}>
-          <View style={[styles.previewBillRow, styles.previewBillHeaderRow]}>
-            <Text style={[styles.previewBillCell, styles.previewBillItemCell]}>{t(language, 'item')}</Text>
-            <Text style={styles.previewBillSmallCell}>{t(language, 'pcs')}</Text>
-            <Text style={[styles.previewBillCell, styles.previewBillWeightCell]}>{t(language, 'weight')}</Text>
-          </View>
-          {previewRows.map((item, index) => (
-            <View key={`${item.id}-${index}`} style={styles.previewBillRow}>
-              <Text style={[styles.previewBillCell, styles.previewBillItemCell]}>
-                {item.itemName ? translateNameOrItem(item.itemName, language) : ''}
-              </Text>
-              <Text style={styles.previewBillSmallCell}>{formatPlainNumber(item.pcs)}</Text>
-              <Text style={[styles.previewBillCell, styles.previewBillWeightCell]}>{itemWeightDisplayText(item)}</Text>
-            </View>
-          ))}
-          <View style={[styles.previewBillRow, styles.previewBillTotalRow]}>
-            <Text style={[styles.previewBillCell, styles.previewBillItemCell]}>Total</Text>
-            <Text style={styles.previewBillSmallCell}>{formatPlainNumber(previewPcsTotal)}</Text>
-            <Text style={[styles.previewBillCell, styles.previewBillWeightCell]}>{formatCalcValue(previewWeightTotal, 3)}</Text>
-          </View>
-          {payload.note ? (
-            <View style={styles.previewNoteRow}>
-              <Text style={styles.previewNoteText}>{payload.note}</Text>
-            </View>
-          ) : null}
+      <View style={styles.previewBillTable}>
+        <View style={[styles.previewBillRow, styles.previewBillHeaderRow]}>
+          <Text style={[styles.previewBillCell, styles.previewBillItemCell]}>{t(language, 'item')}</Text>
+          <Text style={[styles.previewBillCell, styles.previewBillWeightCell]}>{t(language, 'weight')}</Text>
+          <Text style={[styles.previewBillCell, styles.previewBillTouchCell]}>{t(language, 'touch')}</Text>
+          <Text style={[styles.previewBillCell, styles.previewBillFineCell]}>{t(language, 'fine')}</Text>
+          <Text style={styles.previewBillSmallCell}>{t(language, 'pcs')}</Text>
+          <Text style={[styles.previewBillCell, styles.previewBillLabourCell]}>{t(language, 'labour')}</Text>
+          <Text style={[styles.previewBillCell, styles.previewBillAmountCell]}>{t(language, 'amount')}</Text>
         </View>
-      ) : (
-        <View style={styles.previewBillTable}>
-          <View style={[styles.previewBillRow, styles.previewBillHeaderRow]}>
-            <Text style={[styles.previewBillCell, styles.previewBillItemCell]}>{t(language, 'item')}</Text>
-            <Text style={[styles.previewBillCell, styles.previewBillWeightCell]}>{t(language, 'weight')}</Text>
-            <Text style={[styles.previewBillCell, styles.previewBillTouchCell]}>{t(language, 'touch')}</Text>
-            <Text style={[styles.previewBillCell, styles.previewBillFineCell]}>{t(language, 'fine')}</Text>
-            <Text style={styles.previewBillSmallCell}>{t(language, 'pcs')}</Text>
-            <Text style={[styles.previewBillCell, styles.previewBillLabourCell]}>{t(language, 'labour')}</Text>
-            <Text style={[styles.previewBillCell, styles.previewBillAmountCell]}>{t(language, 'amount')}</Text>
+        {previewRows.map((item, index) => (
+          <View key={`${item.id}-${index}`} style={styles.previewBillRow}>
+            <Text style={[styles.previewBillCell, styles.previewBillItemCell]}>
+              {item.itemName ? `${translateNameOrItem(item.itemName, language)} (${item.material})` : ''}
+            </Text>
+            <Text style={[styles.previewBillCell, styles.previewBillWeightCell]}>{itemWeightDisplayText(item)}</Text>
+            <Text style={[styles.previewBillCell, styles.previewBillTouchCell]}>{formatPlainNumber(item.touch)}</Text>
+            <Text style={[styles.previewBillCell, styles.previewBillFineCell]}>{formatPlainNumber(item.fine)}</Text>
+            <Text style={styles.previewBillSmallCell}>{formatPlainNumber(item.pcs)}</Text>
+            <Text style={[styles.previewBillCell, styles.previewBillLabourCell]}>{itemLabourDisplay(item)}</Text>
+            <Text style={[styles.previewBillCell, styles.previewBillAmountCell]}>
+              {item.amount ? formatBillMoney(item.amount, payload.autoRoundFigure) : ''}
+            </Text>
           </View>
-          {previewRows.map((item, index) => (
-            <View key={`${item.id}-${index}`} style={styles.previewBillRow}>
-              <Text style={[styles.previewBillCell, styles.previewBillItemCell]}>
-                {item.itemName ? `${translateNameOrItem(item.itemName, language)} (${item.material})` : ''}
-              </Text>
-              <Text style={[styles.previewBillCell, styles.previewBillWeightCell]}>{itemWeightDisplayText(item)}</Text>
-              <Text style={[styles.previewBillCell, styles.previewBillTouchCell]}>{formatPlainNumber(item.touch)}</Text>
-              <Text style={[styles.previewBillCell, styles.previewBillFineCell]}>{formatPlainNumber(item.fine)}</Text>
-              <Text style={styles.previewBillSmallCell}>{formatPlainNumber(item.pcs)}</Text>
-              <Text style={[styles.previewBillCell, styles.previewBillLabourCell]}>{itemLabourDisplay(item)}</Text>
-              <Text style={[styles.previewBillCell, styles.previewBillAmountCell]}>
-                {item.amount ? formatBillMoney(item.amount, payload.autoRoundFigure) : ''}
-              </Text>
-            </View>
-          ))}
+        ))}
+        {payload.billType === 'estimate' ? (
           <View style={[styles.previewBillRow, styles.previewBillTotalRow]}>
             <Text style={[styles.previewBillCell, styles.previewBillItemCell]}>Total</Text>
             <Text style={[styles.previewBillCell, styles.previewBillWeightCell]}>{formatCalcValue(previewWeightTotal, 3)}</Text>
@@ -5823,80 +6624,76 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
             <Text style={[styles.previewBillCell, styles.previewBillLabourCell]}>{formatBillMoney(payload.subtotal, payload.autoRoundFigure)}</Text>
             <Text style={[styles.previewBillCell, styles.previewBillAmountCell]}>{formatBillMoney(payload.subtotal, payload.autoRoundFigure)}</Text>
           </View>
-        </View>
-      )}
+        ) : null}
+      </View>
 
-      {payload.billType === 'estimate' ? (
-        <View style={styles.previewSummaryBlock}>
-          <View style={styles.previewSettlement}>
+      <View style={styles.previewSummaryBlock}>
+        <View style={styles.previewSettlement}>
+          <View style={styles.previewSettlementGroup}>
+            <Text style={styles.previewSettlementHeading}>Fine summary</Text>
+            {fineRows.map((row) => (
+              <View key={`${row.label}-${row.value}`} style={styles.previewSettlementRow}>
+                <Text style={styles.previewSettlementLabel}>{row.label}</Text>
+                <Text style={styles.previewSettlementValue}>{row.value}</Text>
+              </View>
+            ))}
+          </View>
+          {moneyRows.length ? (
             <View style={styles.previewSettlementGroup}>
-              <Text style={styles.previewSettlementHeading}>Fine summary</Text>
-              {fineRows.map((row) => (
+              <Text style={styles.previewSettlementHeading}>Receipt summary</Text>
+              {moneyRows.map((row) => (
                 <View key={`${row.label}-${row.value}`} style={styles.previewSettlementRow}>
                   <Text style={styles.previewSettlementLabel}>{row.label}</Text>
                   <Text style={styles.previewSettlementValue}>{row.value}</Text>
                 </View>
               ))}
             </View>
-            {moneyRows.length ? (
-              <View style={styles.previewSettlementGroup}>
-                <Text style={styles.previewSettlementHeading}>Receipt summary</Text>
-                {moneyRows.map((row) => (
-                  <View key={`${row.label}-${row.value}`} style={styles.previewSettlementRow}>
-                    <Text style={styles.previewSettlementLabel}>{row.label}</Text>
-                    <Text style={styles.previewSettlementValue}>{row.value}</Text>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-            {labourSummary ? (
-              <View style={styles.previewSettlementGroup}>
-                <Text style={styles.previewSettlementHeading}>Labour note</Text>
-                <Text style={styles.previewSettlementText}>{labourSummary}</Text>
-              </View>
-            ) : null}
-            {bookedRateLines.length > 0 ? (
-              <View style={styles.previewBookedRates}>
-                {bookedRateLines.map((line) => (
-                  <Text key={line} style={styles.previewBookedRateText}>
-                    {line}
-                  </Text>
-                ))}
-              </View>
-            ) : null}
-            {packetLessSummary ? (
-              <View style={styles.previewBookedRates}>
-                <Text style={styles.previewBookedRateText}>{packetLessSummary}</Text>
-              </View>
-            ) : null}
-          </View>
-          <View style={styles.previewBottomRight}>
-            <View style={styles.previewTotals}>
-              <InfoLine label={t(language, 'labourTotal')} value={formatBillMoney(payload.subtotal, payload.autoRoundFigure)} />
-              {rateCutSummaryAmount > 0 ? (
-                <InfoLine label="Rate cut amount" value={formatBillMoney(rateCutSummaryAmount, payload.autoRoundFigure)} />
-              ) : null}
-              <InfoLine label="Cash rec" value={formatBillMoney(cashReceivedSummaryAmount, payload.autoRoundFigure)} />
-              {transactionSummary.discountAmount > 0 ? (
-                <InfoLine label="Discount" value={formatBillMoney(transactionSummary.discountAmount, payload.autoRoundFigure)} />
-              ) : null}
-              <InfoLine label="Amount due" value={formatBillMoney(transactionSummary.billLabourBalance, payload.autoRoundFigure)} />
+          ) : null}
+          {labourSummary ? (
+            <View style={styles.previewSettlementGroup}>
+              <Text style={styles.previewSettlementHeading}>Labour note</Text>
+              <Text style={styles.previewSettlementText}>{labourSummary}</Text>
             </View>
-            {rateCutNotes.length ? (
-              <View style={styles.previewFooterNoteBlock}>
-                {rateCutNotes.map((note) => (
-                  <Text key={note} style={styles.previewEffectText}>
-                    {note}
-                  </Text>
-                ))}
-              </View>
-            ) : null}
-          </View>
+          ) : null}
+          {bookedRateLines.length > 0 ? (
+            <View style={styles.previewBookedRates}>
+              {bookedRateLines.map((line) => (
+                <Text key={line} style={styles.previewBookedRateText}>
+                  {line}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+          {packetLessSummary ? (
+            <View style={styles.previewBookedRates}>
+              <Text style={styles.previewBookedRateText}>{packetLessSummary}</Text>
+            </View>
+          ) : null}
         </View>
-      ) : null}
-      {payload.billType === 'estimate' ? (
-        <Text style={styles.previewRemainBracket}>{remainingBracketTextWithTransactions(payload, transactions)}</Text>
-      ) : null}
+        <View style={styles.previewBottomRight}>
+          <View style={styles.previewTotals}>
+            <InfoLine label={t(language, 'labourTotal')} value={formatBillMoney(payload.subtotal, payload.autoRoundFigure)} />
+            {rateCutSummaryAmount > 0 ? (
+              <InfoLine label="Rate cut amount" value={formatBillMoney(rateCutSummaryAmount, payload.autoRoundFigure)} />
+            ) : null}
+            <InfoLine label="Cash rec" value={formatBillMoney(cashReceivedSummaryAmount, payload.autoRoundFigure)} />
+            {transactionSummary.discountAmount > 0 ? (
+              <InfoLine label="Discount" value={formatBillMoney(transactionSummary.discountAmount, payload.autoRoundFigure)} />
+            ) : null}
+            <InfoLine label="Amount due" value={formatBillMoney(transactionSummary.billLabourBalance, payload.autoRoundFigure)} />
+          </View>
+          {rateCutNotes.length ? (
+            <View style={styles.previewFooterNoteBlock}>
+              {rateCutNotes.map((note) => (
+                <Text key={note} style={styles.previewEffectText}>
+                  {note}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      </View>
+      <Text style={styles.previewRemainBracket}>{remainingBracketTextWithTransactions(payload, transactions)}</Text>
       <View style={styles.previewFooter}>
         <View style={styles.previewFooterLeft}>
           <Text style={styles.previewTerms}>{t(language, 'reportLine1')} {t(language, 'reportLine2')}</Text>
@@ -5904,356 +6701,6 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
         <Text style={styles.previewSignature}>{t(language, 'signature')} :</Text>
       </View>
     </View>
-  );
-}
-type JangadBookTab = 'book' | 'return';
-type ReturnView = 'parties' | 'bills' | 'returns';
-
-function JangadBookScreen({
-  onBack,
-  onOpenBill,
-  onNewJangadBill,
-  onConvertRemaining,
-}: {
-  onBack: () => void;
-  onOpenBill: (id: string) => void;
-  onNewJangadBill: () => void;
-  onConvertRemaining?: (billId: string) => void;
-}) {
-  const db = useDatabase();
-  const [tab, setTab] = useState<JangadBookTab>('book');
-  const [returnView, setReturnView] = useState<ReturnView>('parties');
-  const [parties, setParties] = useState<PartyFolder[]>([]);
-  const [selectedPartyId, setSelectedPartyId] = useState<string | null>(null);
-  const [partyBills, setPartyBills] = useState<RecentBill[]>([]);
-  const [selectedBillId, setSelectedBillId] = useState<string | null>(null);
-  const [returnVouchers, setReturnVouchers] = useState<(JangadReturnVoucher & { items: JangadReturnItem[] })[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [allJangadBills, setAllJangadBills] = useState<RecentBill[]>([]);
-  const [showReturnForm, setShowReturnForm] = useState(false);
-  const [returnDate, setReturnDate] = useState(localIsoDate());
-  const [returnNote, setReturnNote] = useState('');
-  const [returnItems, setReturnItems] = useState<{ itemName: string; weight: string; pcs: string }[]>([
-    { itemName: '', weight: '', pcs: '1' },
-  ]);
-  const [selectedBillItems, setSelectedBillItems] = useState<BillItemDraft[]>([]);
-
-  useEffect(() => {
-    if (!db) return;
-    setLoading(true);
-    Promise.all([
-      getAllBills(db).then((bills) => setAllJangadBills(bills.filter((b) => b.billType === 'jangad'))),
-      getPartiesWithJangadBills(db).then(setParties),
-    ]).finally(() => setLoading(false));
-  }, [db]);
-
-  useEffect(() => {
-    if (!db || !selectedPartyId) return;
-    getJangadBillsForParty(db, selectedPartyId).then(setPartyBills);
-  }, [db, selectedPartyId]);
-
-  useEffect(() => {
-    if (!db || !selectedBillId) return;
-    getReturnsForBill(db, selectedBillId).then(setReturnVouchers);
-  }, [db, selectedBillId]);
-
-  function selectParty(partyId: string) {
-    setSelectedPartyId(partyId);
-    setReturnView('bills');
-  }
-
-  function selectBill(billId: string) {
-    setSelectedBillId(billId);
-    setReturnView('returns');
-    if (db) {
-      getBillPayload(db, billId).then((p) => setSelectedBillItems(p?.items || []));
-    }
-  }
-
-  function backFromReturn() {
-    if (returnView === 'bills') { setSelectedPartyId(null); setReturnView('parties'); }
-    else if (returnView === 'returns') { setSelectedBillId(null); setReturnView('bills'); setSelectedBillItems([]); }
-  }
-
-  function openReturnForm() {
-    setReturnItems([{ itemName: '', weight: '', pcs: '' }]);
-    setReturnDate(localIsoDate());
-    setReturnNote('');
-    setShowReturnForm(true);
-  }
-
-  function addReturnItem() {
-    setReturnItems((prev) => [...prev, { itemName: '', weight: '', pcs: '1' }]);
-  }
-
-  function updateReturnItem(index: number, key: 'itemName' | 'weight' | 'pcs', value: string) {
-    setReturnItems((prev) => prev.map((item, i) => (i === index ? { ...item, [key]: value } : item)));
-  }
-
-  async function deleteReturn(voucherId: string) {
-    if (!db) return;
-    Alert.alert('Delete return', 'Is return voucher ko delete kar dein?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          setLoading(true);
-          try {
-            await deleteJangadReturn(db, voucherId);
-            if (selectedBillId) {
-              getReturnsForBill(db, selectedBillId).then(setReturnVouchers);
-            }
-          } catch { Alert.alert('Error', 'Delete nahi hua.'); }
-          finally { setLoading(false); }
-        },
-      },
-    ]);
-  }
-
-  function fillReturnItem(index: number, original: BillItemDraft) {
-    setReturnItems((prev) => prev.map((item, i) =>
-      i === index ? { itemName: original.itemName, pcs: String(original.pcs || ''), weight: String(original.weight || '') } : item
-    ));
-  }
-
-  async function saveReturn() {
-    if (!db) { Alert.alert('Error', 'DB not ready.'); return; }
-    if (!selectedBillId || !selectedPartyId) { Alert.alert('Error', 'Bill ya party select nahi hai.'); return; }
-    const items = returnItems.filter((i) => i.itemName.trim() && (parseInt(i.pcs) > 0 || parseFloat(i.weight) > 0));
-    if (!items.length) { Alert.alert('Error', 'Kam se kam ek item with pcs/GW daalo.'); return; }
-    setLoading(true);
-    try {
-      await saveJangadReturn(db, {
-        billId: selectedBillId,
-        customerId: selectedPartyId,
-        returnDate,
-        note: returnNote,
-        items: items.map((i) => ({ itemName: i.itemName, weight: parseFloat(i.weight) || 0, pcs: parseInt(i.pcs) || 0 })),
-      });
-      setShowReturnForm(false);
-      setReturnNote('');
-      setReturnItems([{ itemName: '', weight: '', pcs: '' }]);
-      setReturnDate(localIsoDate());
-      if (selectedBillId) {
-        getReturnsForBill(db, selectedBillId).then(setReturnVouchers);
-      }
-    } catch (e: any) {
-      console.error('saveReturn error', e);
-      Alert.alert('Error', e?.message || 'Return save nahi hua.');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
-      <PageHeader title="Jangad book" onBack={onBack} />
-
-      <View style={styles.tabRow}>
-        <Pressable onPress={() => setTab('book')} style={[styles.tabBtn, tab === 'book' && styles.tabBtnActive]}>
-          <Text style={[styles.tabBtnText, tab === 'book' && styles.tabBtnTextActive]}>Jangad Book</Text>
-        </Pressable>
-        <Pressable onPress={() => setTab('return')} style={[styles.tabBtn, tab === 'return' && styles.tabBtnActive]}>
-          <Text style={[styles.tabBtnText, tab === 'return' && styles.tabBtnTextActive]}>Jangad Return Book</Text>
-        </Pressable>
-      </View>
-
-      {tab === 'book' ? (
-        <>
-          <Pressable onPress={onNewJangadBill} style={[styles.button, { marginHorizontal: 12, marginTop: 12 }]}>
-            <Text style={styles.buttonText}>+ New jangad bill</Text>
-          </Pressable>
-          <Section title="All jangad bills" />
-          {loading ? <Text style={styles.loadingText}>Loading...</Text> : (
-            <BillList
-              bills={allJangadBills}
-              emptyText="Jangad bill nahi hai."
-              onOpenBill={onOpenBill}
-              onShareBill={() => {}}
-            />
-          )}
-        </>
-      ) : (
-        <>
-          {returnView !== 'parties' ? (
-            <Pressable onPress={backFromReturn} style={styles.backLink}>
-              <Text style={styles.backLinkText}>← Back</Text>
-            </Pressable>
-          ) : null}
-
-          {returnView === 'parties' ? (
-            <>
-              <Section title="Parties with jangad" />
-              {loading ? <Text style={styles.loadingText}>Loading...</Text> : parties.map((p) => (
-                <Pressable key={p.customerId} onPress={() => selectParty(p.customerId)} style={styles.partyRow}>
-                  <View style={styles.partyRowBody}>
-                    <Text style={styles.partyRowName}>{p.customerName}</Text>
-                    <Text style={styles.partyRowMeta}>{p.billCount} bills | {p.customerMobile}</Text>
-                  </View>
-                  <Text style={styles.partyRowArrow}>›</Text>
-                </Pressable>
-              ))}
-            </>
-          ) : returnView === 'bills' ? (
-            <>
-              <Section title={`${parties.find((p) => p.customerId === selectedPartyId)?.customerName || 'Party'} jangad bills`} />
-              {partyBills.map((b) => (
-                <Pressable key={b.id} onPress={() => selectBill(b.id)} style={styles.billRow}>
-                  <View style={styles.billRowBody}>
-                    <Text style={styles.billRowNo}>#{b.billNo}</Text>
-                    <Text style={styles.billRowDate}>{formatDateForBill(b.billDate)}</Text>
-                  </View>
-                  <Text style={styles.billRowArrow}>›</Text>
-                </Pressable>
-              ))}
-              {partyBills.length === 0 ? <Text style={styles.emptyText}>Koi jangad bill nahi hai.</Text> : null}
-            </>
-          ) : (
-            <>
-              <Section title="Returns" />
-              {(() => {
-                const bill = partyBills.find((b) => b.id === selectedBillId);
-                const origPcs = selectedBillItems.reduce((s, i) => s + (parseInt(i.pcs) || 0), 0);
-                const origWt = selectedBillItems.reduce((s, i) => s + (parseFloat(i.weight) || 0), 0);
-                const retPcs = returnVouchers.reduce((s, v) => s + v.items.reduce((s2, i) => s2 + i.pcs, 0), 0);
-                const retWt = returnVouchers.reduce((s, v) => s + v.items.reduce((s2, i) => s2 + i.weight, 0), 0);
-                return (
-                  <View style={styles.returnSummary}>
-                    <View style={styles.returnSummaryRow}>
-                      <Text style={styles.returnSummaryBill}>Bill #{bill?.billNo || ''}</Text>
-                      <Text style={styles.returnSummaryDate}>{formatDateForBill(bill?.billDate || '')}</Text>
-                    </View>
-                    <View style={styles.returnChipsRow}>
-                      <View style={styles.returnChip}>
-                        <Text style={styles.returnChipLabel}>Original</Text>
-                        <Text style={styles.returnChipValue}>{origPcs} pcs | {formatCalcValue(origWt, 3)} gm</Text>
-                      </View>
-                      {retPcs > 0 ? (
-                        <View style={[styles.returnChip, styles.returnChipAccent]}>
-                          <Text style={styles.returnChipLabel}>Returned</Text>
-                          <Text style={styles.returnChipValue}>{retPcs} pcs | {formatCalcValue(retWt, 3)} gm</Text>
-                        </View>
-                      ) : null}
-                      <View style={styles.returnChip}>
-                        <Text style={styles.returnChipLabel}>Balance</Text>
-                        <Text style={styles.returnChipValue}>{origPcs - retPcs} pcs | {formatCalcValue(Math.max(0, origWt - retWt), 3)} gm</Text>
-                      </View>
-                    </View>
-                  </View>
-                );
-              })()}
-              {returnVouchers.map((v) => (
-                <View key={v.id} style={styles.returnVoucherCard}>
-                  <View style={styles.returnVoucherHeader}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      <Text style={styles.returnVoucherDate}>{formatDateForBill(v.returnDate)}</Text>
-                      <Text style={styles.returnVoucherMeta}>{v.items.length} items</Text>
-                    </View>
-                    <Pressable onPress={() => deleteReturn(v.id)} style={styles.returnDeleteBtn}>
-                      <Text style={styles.returnDeleteBtnText}>✕</Text>
-                    </Pressable>
-                  </View>
-                  <View style={styles.returnItemsTableHeader}>
-                    <Text style={[styles.returnItemsTableTh, { flex: 3 }]}>Item</Text>
-                    <Text style={[styles.returnItemsTableTh, { flex: 1, textAlign: 'right' }]}>Pcs</Text>
-                    <Text style={[styles.returnItemsTableTh, { flex: 1, textAlign: 'right' }]}>GW</Text>
-                  </View>
-                  {v.items.map((item) => (
-                    <View key={item.id} style={styles.returnItemsTableRow}>
-                      <Text style={[styles.returnItemsTableCell, { flex: 3 }]}>{item.itemName}</Text>
-                      <Text style={[styles.returnItemsTableCell, { flex: 1, textAlign: 'right' }]}>{item.pcs}</Text>
-                      <Text style={[styles.returnItemsTableCell, { flex: 1, textAlign: 'right' }]}>{formatCalcValue(item.weight, 3)}</Text>
-                    </View>
-                  ))}
-                  {v.note ? (
-                    <View style={styles.returnVoucherNoteRow}>
-                      <Text style={styles.returnVoucherNoteLabel}>Note:</Text>
-                      <Text style={styles.returnVoucherNoteText}>{v.note}</Text>
-                    </View>
-                  ) : null}
-                </View>
-              ))}
-              {returnVouchers.length === 0 ? <Text style={styles.emptyText}>Is bill me koi return nahi hua.</Text> : null}
-              {showReturnForm ? null : (
-                <View style={styles.returnFormActions}>
-                  <Pressable onPress={openReturnForm} style={[styles.button, { flex: 1 }]}>
-                    <Text style={styles.buttonText}>+ New return</Text>
-                  </Pressable>
-                  {selectedBillId && onConvertRemaining ? (
-                    <Pressable onPress={() => onConvertRemaining(selectedBillId)} style={[styles.button, { flex: 1 }]}>
-                      <Text style={styles.buttonText}>Remaining → est. bill</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              )}
-              <Modal visible={showReturnForm} animationType="slide" transparent>
-                <SafeAreaView style={styles.returnFormModalOverlay}>
-                  <View style={styles.returnFormModal}>
-                    <View style={styles.returnFormModalHeader}>
-                      <Text style={styles.returnFormModalTitle}>New return</Text>
-                      <Pressable onPress={() => setShowReturnForm(false)} style={styles.returnFormModalCloseBtn}>
-                        <Text style={styles.returnFormModalCloseText}>✕</Text>
-                      </Pressable>
-                    </View>
-                    <ScrollView keyboardShouldPersistTaps="handled">
-                      <Field label="Return date" value={returnDate} onChangeText={setReturnDate} />
-                      {selectedBillItems.length > 0 ? (
-                        <View style={styles.originalItemsRef}>
-                          <Text style={styles.originalItemsRefTitle}>Original bill items (tap to fill):</Text>
-                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>
-                            {selectedBillItems.map((i, idx) => (
-                              <Pressable
-                                key={idx}
-                                onPress={() => {
-                                  const emptyIdx = returnItems.findIndex((ri) => !ri.itemName.trim());
-                                  if (emptyIdx >= 0) fillReturnItem(emptyIdx, i);
-                                  else setReturnItems((prev) => [...prev, { itemName: i.itemName, pcs: String(i.pcs || ''), weight: String(i.weight || '') }]);
-                                }}
-                                style={styles.originalItemChip}
-                              >
-                                <Text style={styles.originalItemChipName}>{i.itemName}</Text>
-                                <Text style={styles.originalItemChipDetail}>{i.pcs}p {i.weight}gw</Text>
-                              </Pressable>
-                            ))}
-                          </View>
-                        </View>
-                      ) : null}
-                      <Text style={styles.formSectionTitle}>Return items</Text>
-                      {returnItems.map((item, index) => (
-                        <View key={index} style={styles.returnFormRow}>
-                          <View style={{ flex: 1 }}>
-                            <Field label="Item name" value={item.itemName} onChangeText={(v) => updateReturnItem(index, 'itemName', v)} />
-                          </View>
-                          <View style={{ width: 60 }}>
-                            <Field label="Pcs" keyboardType="decimal-pad" value={item.pcs} onChangeText={(v) => updateReturnItem(index, 'pcs', v)} />
-                          </View>
-                          <View style={{ width: 70 }}>
-                            <Field label="GW" keyboardType="decimal-pad" value={item.weight} onChangeText={(v) => updateReturnItem(index, 'weight', v)} />
-                          </View>
-                        </View>
-                      ))}
-                      <Pressable onPress={addReturnItem} style={styles.addItemBtn}>
-                        <Text style={styles.addItemBtnText}>+ Add item</Text>
-                      </Pressable>
-                      <Field label="Note" value={returnNote} onChangeText={setReturnNote} multiline />
-                      <View style={styles.returnFormActions}>
-                        <Pressable onPress={() => setShowReturnForm(false)} style={[styles.button, styles.secondaryButton, { flex: 1 }]}>
-                          <Text style={styles.secondaryButtonText}>Cancel</Text>
-                        </Pressable>
-                        <Pressable onPress={saveReturn} style={[styles.button, loading && styles.disabledButton, { flex: 1 }]}>
-                          <Text style={styles.buttonText}>{loading ? 'Saving...' : 'Save return'}</Text>
-                        </Pressable>
-                      </View>
-                    </ScrollView>
-                  </View>
-                </SafeAreaView>
-              </Modal>
-            </>
-          )}
-        </>
-      )}
-    </ScrollView>
   );
 }
 
@@ -6268,12 +6715,12 @@ function BrandLogo({ size = 56 }: { size?: number }) {
 function RateTile({
   label,
   metric,
-  tone = 'silver',
+  tone = 'gold',
   value,
 }: {
   label: string;
   metric: string;
-  tone?: 'silver';
+  tone?: 'gold' | 'silver';
   value: string;
 }) {
   return (
@@ -6298,7 +6745,7 @@ function BillTypeSelector({
     <Segment
       options={[
         { label: t(language, 'estimateBook'), value: 'estimate' },
-        { label: t(language, 'jangadBook'), value: 'jangad' },
+        { label: t(language, 'wholesaleBill'), value: 'wholesale' },
       ]}
       value={billType}
       onChange={onChange}
@@ -6330,7 +6777,7 @@ function MetalSelector({ material, onChange }: { material: MetalType; onChange: 
   return (
     <Segment
       options={[
-        
+        { label: 'Gold', value: 'gold' },
         { label: 'Silver', value: 'silver' },
       ]}
       value={material}
@@ -6625,16 +7072,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '900',
   },
-  addItemAction: {
-    backgroundColor: '#fff',
-    paddingVertical: 14,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: '#007a66',
+  addItemButton: {
+    marginTop: 4,
   },
   appTitle: {
     color: '#f7d777',
@@ -6682,13 +7121,11 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   calcPill: {
-    backgroundColor: '#f7fafc',
+    backgroundColor: '#f4ece3',
     borderRadius: 8,
     minWidth: 96,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderWidth: 1,
-    borderColor: '#edf2f7',
+    paddingHorizontal: 9,
+    paddingVertical: 8,
   },
   calcRow: {
     flexDirection: 'row',
@@ -6706,30 +7143,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#007a66',
   },
   collapsedItemMeta: {
-    color: '#718096',
-    fontSize: 12,
-    fontWeight: '600',
+    color: '#6d665f',
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 2,
   },
   collapsedItemRow: {
-    backgroundColor: '#fff',
-    borderColor: '#edf2f7',
+    backgroundColor: '#f8efe7',
+    borderColor: '#d9b7ad',
     borderRadius: 8,
     borderWidth: 1,
-    padding: 14,
-    marginBottom: 8,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
+    padding: 10,
   },
   collapsedItemTitle: {
-    color: '#2d3748',
-    fontSize: 14,
-    fontWeight: '700',
+    color: '#5b1f2b',
+    fontSize: 13,
+    fontWeight: '900',
   },
   customDateGrid: {
     marginBottom: 0,
@@ -6776,18 +7205,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 10,
   },
+  emptyText: {
+    color: '#6d665f',
+    fontSize: 13,
+  },
   field: {
     flexBasis: 118,
     flexGrow: 1,
-    marginBottom: 8,
     minWidth: 112,
   },
   fieldLabel: {
-    color: '#718096',
+    color: '#514942',
     fontSize: 11,
-    fontWeight: '700',
-    marginBottom: 6,
-    textTransform: 'uppercase',
+    fontWeight: '800',
+    marginBottom: 4,
   },
   fieldWide: {
     minWidth: '100%',
@@ -6908,6 +7339,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: 9,
   },
+  ledgerDateCell: {
+    minWidth: 72,
+    width: 82,
+  },
+  ledgerParticularCell: {
+    flex: 1,
+    minWidth: 120,
+  },
   ledgerParticularText: {
     color: '#251a17',
     fontSize: 11,
@@ -6924,7 +7363,19 @@ const styles = StyleSheet.create({
     borderColor: '#eee',
     borderRadius: 8,
     borderWidth: 1,
+    minWidth: 640,
     overflow: 'hidden',
+    width: '100%',
+  },
+  ledgerTableScroller: {
+    minWidth: '100%',
+  },
+  ledgerTableAmount: {
+    color: '#251a17',
+    fontSize: 11,
+    fontWeight: '900',
+    minWidth: 82,
+    textAlign: 'right',
   },
   ledgerTableCell: {
     color: '#251a17',
@@ -6939,8 +7390,9 @@ const styles = StyleSheet.create({
     borderBottomColor: '#eaded4',
     borderBottomWidth: 1,
     flexDirection: 'row',
-    paddingHorizontal: 6,
-    paddingVertical: 7,
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
   },
   panelNested: {
     backgroundColor: '#fff7ef',
@@ -7054,17 +7506,12 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
   },
   itemCard: {
-    backgroundColor: '#fff',
-    borderColor: '#edf2f7',
-    borderRadius: 12,
+    backgroundColor: '#fffdfa',
+    borderColor: '#e4d8ce',
+    borderRadius: 8,
     borderWidth: 1,
-    marginBottom: 16,
-    padding: 16,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
+    marginBottom: 8,
+    padding: 9,
   },
   itemCardHeader: {
     alignItems: 'center',
@@ -7209,7 +7656,7 @@ const styles = StyleSheet.create({
   },
   itemNameToggle: {
     alignItems: 'center',
-    backgroundColor: '#007a66',
+    backgroundColor: '#8e5360',
     borderColor: '#8e5360',
     borderRadius: 8,
     borderWidth: 1,
@@ -7229,12 +7676,16 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   page: {
-    flexGrow: 1,
-    padding: 12,
-    backgroundColor: '#f8f9fa',
+    padding: 10,
+    paddingBottom: 44,
+  },
+  panel: {
+    backgroundColor: '#fff',
+    borderColor: '#eee',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#edf2f7',
-    marginBottom: 12,
+    overflow: 'hidden',
+    padding: 9,
   },
   panelTitle: {
     color: '#241b17',
@@ -7604,17 +8055,6 @@ const styles = StyleSheet.create({
   previewTable: {
     marginTop: 12,
   },
-  previewNoteRow: {
-    padding: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#e7ddd4',
-  },
-  previewNoteText: {
-    color: '#6d665f',
-    fontSize: 11,
-    fontStyle: 'italic',
-    lineHeight: 16,
-  },
   previewTerms: {
     color: '#7d3c45',
     fontSize: 10,
@@ -7628,18 +8068,16 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   previewTotals: {
-    borderWidth: 1,
-    borderColor: '#b34654',
-    borderRadius: 4,
-    backgroundColor: '#fff',
     minWidth: 0,
     maxWidth: 300,
-    padding: 8,
     width: '100%',
   },
   estimatePreview: {
     borderColor: '#b34654',
     minHeight: 700,
+  },
+  wholesalePreview: {
+    borderColor: '#aebbb3',
   },
   printButton: {
     backgroundColor: '#226a5a',
@@ -7813,44 +8251,23 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   searchBox: {
-    backgroundColor: '#fff',
+    backgroundColor: '#fffdfa',
+    borderColor: '#e4d8ce',
     borderRadius: 8,
-    padding: 12,
     borderWidth: 1,
-    borderColor: '#edf2f7',
-    marginBottom: 12,
-  },
-  billFilterRow: {
-    flexDirection: 'row',
-    gap: 6,
     marginBottom: 8,
-  },
-  billFilterBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderRadius: 6,
-    backgroundColor: '#f3ede8',
-  },
-  billFilterBtnActive: {
-    backgroundColor: '#b34654',
-  },
-  billFilterText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#6d665f',
-  },
-  billFilterTextActive: {
-    color: '#fff',
+    padding: 9,
   },
   searchInput: {
-    backgroundColor: '#f7fafc',
-    borderColor: '#e2e8f0',
+    backgroundColor: '#fbf6ef',
+    borderColor: '#d7cec5',
     borderRadius: 8,
     borderWidth: 1,
-    color: '#1a202c',
+    color: '#1f1b18',
     fontSize: 14,
-    minHeight: 44,
-    paddingHorizontal: 12,
+    minHeight: 38,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
   },
   navButton: {
     flexShrink: 0,
@@ -7958,11 +8375,11 @@ const styles = StyleSheet.create({
     marginTop: -2,
   },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: '800', 
-    color: '#1a202c',
+    color: '#241b17',
+    fontSize: 16,
+    fontWeight: '900',
     marginBottom: 8,
-    marginTop: 4,
+    marginTop: 16,
   },
   sharePanel: {
     alignItems: 'center',
@@ -8061,7 +8478,7 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   segment: {
-    backgroundColor: '#edf2f7',
+    backgroundColor: '#eee4d9',
     borderRadius: 8,
     flexDirection: 'row',
     padding: 3,
@@ -8071,7 +8488,7 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   segmentActive: {
-    backgroundColor: '#007a66',
+    backgroundColor: '#9b2339',
   },
   segmentBlock: {
     flexGrow: 1,
@@ -8152,30 +8569,28 @@ const styles = StyleSheet.create({
   },
   summaryGrid: {
     flexDirection: 'row',
-    gap: 12,
-    marginBottom: 16,
+    flexWrap: 'wrap',
+    gap: 7,
+    marginTop: 8,
   },
   summaryLabel: {
-    color: '#718096',
+    color: '#665d55',
     fontSize: 10,
-    fontWeight: '700',
+    fontWeight: '900',
     textTransform: 'uppercase',
-    marginBottom: 4,
   },
   summaryTile: {
-    flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#f2eadb',
     borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#edf2f7',
-    minHeight: 64,
-    justifyContent: 'center',
+    flex: 1,
+    minWidth: 106,
+    padding: 9,
   },
   summaryValue: {
-    color: '#1a202c',
-    fontSize: 18,
-    fontWeight: '800',
+    color: '#211b16',
+    fontSize: 14,
+    fontWeight: '900',
+    marginTop: 3,
   },
   syncMessage: {
     color: '#6b625b',
@@ -8257,1311 +8672,4 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  panel: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 8,
-  },
-  addItemButton: {
-    alignSelf: 'center',
-    marginVertical: 8,
-  },
-  addItemButtonText: {
-    color: '#007a66',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  ledgerContainer: {
-    paddingHorizontal: 16,
-    paddingBottom: 24,
-    paddingTop: 4,
-  },
-  partyProfileCard: {
-    backgroundColor: '#fff',
-    borderColor: '#9b2339',
-    borderRadius: 8,
-    borderWidth: 2,
-    padding: 10,
-    marginBottom: 12,
-  },
-  partyProfileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  partyAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 6,
-    backgroundColor: '#d4edda',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  partyAvatarText: {
-    color: '#155724',
-    fontSize: 18,
-    fontWeight: '900',
-  },
-  partyProfileBody: {
-    flex: 1,
-  },
-  partyProfileName: {
-    color: '#241b17',
-    fontSize: 15,
-    fontWeight: '900',
-    textTransform: 'capitalize',
-  },
-  partyProfileMeta: {
-    color: '#6d665f',
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 1,
-  },
-  partyProfileAmount: {
-    color: '#201917',
-    fontSize: 16,
-    fontWeight: '900',
-    textAlign: 'right',
-    flexShrink: 0,
-  },
-  ledgerSectionTitle: {
-    color: '#241b17',
-    fontSize: 14,
-    fontWeight: '900',
-    marginBottom: 8,
-  },
-  ledgerSummaryRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-  },
-  ledgerSummaryCard: {
-    flex: 1,
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#edf2f7',
-    justifyContent: 'center',
-  },
-  ledgerSummaryCardWide: {
-    flex: 2,
-  },
-  ledgerSummaryLabel: {
-    color: '#718096',
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    marginBottom: 3,
-  },
-  ledgerSummaryValue: {
-    color: '#1a202c',
-    fontSize: 17,
-    fontWeight: '800',
-  },
-  ledgerActionBar: {
-    alignItems: 'stretch',
-    flexDirection: 'column',
-    gap: 10,
-    marginVertical: 16,
-  },
-  ledgerButtonPrimary: {
-    alignItems: 'center',
-    backgroundColor: '#007a66',
-    borderRadius: 8,
-    minHeight: 44,
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    width: '100%',
-  },
-  ledgerButtonPrimaryText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  ledgerButtonOutline: {
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    borderColor: '#007a66',
-    borderRadius: 8,
-    borderWidth: 1,
-    minHeight: 44,
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    width: '100%',
-  },
-  ledgerButtonOutlineText: {
-    color: '#007a66',
-    fontSize: 13,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  ledgerButtonDanger: {
-    alignItems: 'center',
-    backgroundColor: '#dc3545',
-    borderRadius: 8,
-    minHeight: 44,
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    width: '100%',
-  },
-  ledgerButtonDangerText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  voucherList: {
-    gap: 6,
-  },
-  voucherWrap: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#edf2f7',
-    overflow: 'hidden',
-  },
-  voucherRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#edf2f7',
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-  },
-  voucherLeft: {
-    flex: 1,
-  },
-  voucherTitle: {
-    color: '#241b17',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  voucherDate: {
-    color: '#6d665f',
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 1,
-  },
-  voucherRight: {
-    alignItems: 'flex-end',
-    gap: 2,
-  },
-  voucherMode: {
-    color: '#6d665f',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  voucherChevron: {
-    color: '#6d665f',
-    fontSize: 10,
-  },
-  voucherDetail: {
-    borderTopWidth: 1,
-    borderTopColor: '#edf2f7',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 4,
-  },
-  voucherDetailLine: {
-    color: '#4a5568',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  voucherActions: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 8,
-  },
-  voucherActionBtn: {
-    flex: 1,
-    alignItems: 'center',
-    backgroundColor: '#007a66',
-    borderRadius: 6,
-    minHeight: 36,
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  voucherActionBtnText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  voucherModalOverlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.4)',
-  },
-  voucherModalSheet: {
-    backgroundColor: '#f3ede8',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: '92%',
-    paddingBottom: 28,
-  },
-  voucherModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 12,
-  },
-  voucherModalTitle: {
-    color: '#241b17',
-    fontSize: 18,
-    fontWeight: '900',
-  },
-  voucherModalSubtitle: {
-    color: '#8a7e72',
-    fontSize: 12,
-    fontWeight: '600',
-    marginTop: 1,
-  },
-  voucherModalClose: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#e2d5c8',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  voucherModalCloseText: {
-    color: '#241b17',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  voucherModalCard: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    marginHorizontal: 16,
-    marginTop: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: '#e7ddd4',
-  },
-  voucherSectionTitle: {
-    color: '#241b17',
-    fontSize: 12,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e7ddd4',
-    paddingBottom: 6,
-  },
-  voucherRowItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 5,
-  },
-  voucherRowLabel: {
-    color: '#6d665f',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  voucherRowValue: {
-    color: '#241b17',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  voucherRowTotal: {
-    borderTopWidth: 1,
-    borderTopColor: '#e7ddd4',
-    marginTop: 4,
-    paddingTop: 8,
-  },
-  voucherRowTotalLabel: {
-    color: '#241b17',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  voucherRowTotalValue: {
-    color: '#241b17',
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  voucherNote: {
-    color: '#6d665f',
-    fontSize: 13,
-    fontWeight: '500',
-    fontStyle: 'italic',
-    lineHeight: 18,
-  },
-  voucherModalActions: {
-    flexDirection: 'row',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingTop: 16,
-  },
-  tabRow: {
-    flexDirection: 'row',
-    gap: 0,
-    marginHorizontal: 12,
-    marginTop: 12,
-    borderRadius: 8,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#b34654',
-  },
-  tabBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: 'center',
-    backgroundColor: '#fff',
-  },
-  tabBtnActive: {
-    backgroundColor: '#b34654',
-  },
-  tabBtnText: {
-    color: '#b34654',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  tabBtnTextActive: {
-    color: '#fff',
-  },
-  partyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    marginHorizontal: 12,
-    marginTop: 6,
-    padding: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#edf2f7',
-  },
-  partyRowBody: {
-    flex: 1,
-  },
-  partyRowName: {
-    color: '#241b17',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  partyRowMeta: {
-    color: '#6d665f',
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  partyRowArrow: {
-    color: '#b34654',
-    fontSize: 18,
-    fontWeight: '900',
-    marginLeft: 8,
-  },
-  billRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    marginHorizontal: 12,
-    marginTop: 6,
-    padding: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#edf2f7',
-  },
-  billRowBody: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  billRowNo: {
-    color: '#241b17',
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  billRowDate: {
-    color: '#6d665f',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  billRowArrow: {
-    color: '#b34654',
-    fontSize: 18,
-    fontWeight: '900',
-    marginLeft: 8,
-  },
-  returnVoucherCard: {
-    backgroundColor: '#fff',
-    marginHorizontal: 12,
-    marginTop: 8,
-    padding: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#e8e0d8',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  returnVoucherHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  returnDeleteBtn: {
-    backgroundColor: '#fee2e2',
-    borderRadius: 12,
-    width: 28,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  returnDeleteBtnText: {
-    color: '#dc2626',
-    fontSize: 16,
-    fontWeight: '800',
-    lineHeight: 20,
-  },
-  returnVoucherDate: {
-    color: '#241b17',
-    fontSize: 13,
-    fontWeight: '800',
-    marginBottom: 2,
-  },
-  returnVoucherNote: {
-    color: '#6d665f',
-    fontSize: 11,
-    fontWeight: '500',
-    fontStyle: 'italic',
-    marginBottom: 8,
-  },
-  returnItemRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 6,
-    borderTopWidth: 1,
-    borderTopColor: '#f0ebe5',
-  },
-  returnItemName: {
-    color: '#241b17',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  returnItemDetail: {
-    color: '#6d665f',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  backLink: {
-    marginHorizontal: 12,
-    marginTop: 8,
-  },
-  backLinkText: {
-    color: '#b34654',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  emptyText: {
-    color: '#6d665f',
-    fontSize: 12,
-    fontWeight: '600',
-    marginHorizontal: 12,
-    marginTop: 12,
-    textAlign: 'center',
-  },
-  loadingText: {
-    color: '#6d665f',
-    fontSize: 12,
-    fontWeight: '600',
-    marginHorizontal: 12,
-    marginTop: 12,
-    textAlign: 'center',
-  },
-  originalItemsRef: {
-    backgroundColor: '#f8f4f0',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 8,
-  },
-  originalItemsRefTitle: {
-    color: '#6d665f',
-    fontSize: 11,
-    fontWeight: '700',
-    marginBottom: 6,
-  },
-  originalItemsRefText: {
-    color: '#241b17',
-    fontSize: 11,
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  originalItemChip: {
-    backgroundColor: '#fff',
-    borderColor: '#e0d6cc',
-    borderRadius: 6,
-    borderWidth: 1,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-  },
-  originalItemChipName: {
-    color: '#241b17',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  originalItemChipDetail: {
-    color: '#8a7e75',
-    fontSize: 9,
-    fontWeight: '600',
-    marginTop: 1,
-  },
-  returnFormRow: {
-    flexDirection: 'row',
-    gap: 6,
-    alignItems: 'flex-start',
-  },
-  returnFormActions: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  addItemBtn: {
-    backgroundColor: '#f3ede8',
-    borderRadius: 6,
-    paddingVertical: 6,
-    alignItems: 'center',
-  },
-  addItemBtnText: {
-    color: '#b34654',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  formSectionTitle: {
-    color: '#241b17',
-    fontSize: 12,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-  },
-  returnVoucherMeta: {
-    color: '#8a7e75',
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  returnVoucherNoteRow: {
-    backgroundColor: '#f8f4f0',
-    borderRadius: 6,
-    flexDirection: 'row',
-    gap: 4,
-    marginTop: 8,
-    padding: 8,
-  },
-  returnVoucherNoteLabel: {
-    color: '#6d665f',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  returnVoucherNoteText: {
-    color: '#241b17',
-    flex: 1,
-    fontSize: 11,
-  },
-  returnItemsTableHeader: {
-    flexDirection: 'row',
-    marginTop: 8,
-    paddingBottom: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0ebe5',
-  },
-  returnItemsTableTh: {
-    color: '#8a7e75',
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-  returnItemsTableRow: {
-    flexDirection: 'row',
-    paddingVertical: 5,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f8f4f0',
-  },
-  returnItemsTableCell: {
-    color: '#241b17',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  returnSummary: {
-    backgroundColor: '#fff',
-    borderColor: '#e8e0d8',
-    borderRadius: 10,
-    borderWidth: 1,
-    marginHorizontal: 12,
-    marginTop: 4,
-    padding: 12,
-  },
-  returnSummaryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  returnSummaryBill: {
-    color: '#b34654',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  returnSummaryDate: {
-    color: '#6d665f',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  returnChipsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  returnChip: {
-    backgroundColor: '#f8f4f0',
-    borderRadius: 8,
-    flex: 1,
-    padding: 8,
-  },
-  returnChipAccent: {
-    backgroundColor: '#fff4e5',
-  },
-  returnChipLabel: {
-    color: '#8a7e75',
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-  returnChipValue: {
-    color: '#241b17',
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  returnFormModalOverlay: {
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  returnFormModal: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    maxHeight: '85%',
-    padding: 16,
-  },
-  returnFormModalHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  returnFormModalTitle: {
-    color: '#241b17',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  returnFormModalCloseBtn: {
-    backgroundColor: '#f3ede8',
-    borderRadius: 14,
-    height: 28,
-    width: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  returnFormModalCloseText: {
-    color: '#6d665f',
-    fontSize: 14,
-    fontWeight: '700',
-  },
 });
-
-
-function BillScreen({
-  billDate,
-  billNo,
-  autoRoundFigure,
-  billPayload,
-  customer,
-  discountAmount,
-  discountInputValue,
-  draftItems,
-  silverRate,
-  isSaving,
-  itemNameOptions,
-  language,
-  lastSavedPayload,
-  onAddItem,
-  onBack,
-  onBillDateChange,
-  onBillNoChange,
-  onAutoRoundFigureChange,
-  onCustomerChange,
-  onDiscountAmountChange,
-  onFinalAmountOverrideChange,
-  onCreateItemName,
-  onItemChange,
-  onLanguageChange,
-  onSilverRateChange,
-  onReceiptCashChange,
-  onReceiptGrossWeightChange,
-  onReceiptMaterialChange,
-  onReceiptTouchChange,
-  onReceiptTypeChange,
-  onRateCutAmountChange,
-  onRateCutAdjustsLabourChange,
-  onRateCutFineChange,
-  onRemoveItem,
-  onReminderDaysChange,
-  onReminderEnabledChange,
-  onReminderTimeChange,
-  onJangadReturn,
-  onNoteChange,
-  onSaveBill,
-  onSelectPartySuggestion,
-  onShareSaved,
-  onShareSavedToCustomer,
-  partyFolders,
-  rates,
-  receiptMaterial,
-  receiptType,
-  rateCutAmount,
-  rateCutAdjustsLabour,
-  rateCutAutoAmount,
-  rateCutBookedLabel,
-  rateCutFine,
-  reminderDays,
-  reminderEnabled,
-  reminderTime,
-  receivedCash,
-  finalAmountOverride,
-  receivedFine,
-  receivedGrossWeight,
-  receivedTouch,
-  totals,
-}: {
-  billDate: string;
-  billNo: number;
-  autoRoundFigure: boolean;
-  billPayload: BillPayload;
-  customer: CustomerDraft;
-  discountAmount: string;
-  discountInputValue: string;
-  draftItems: BillItemDraft[];
-  silverRate: string;
-  isSaving: boolean;
-  itemNameOptions: ItemNameOption[];
-  language: Language;
-  lastSavedPayload: BillPayload | null;
-  onAddItem: () => void;
-  onBack: () => void;
-  onBillDateChange: (value: string) => void;
-  onBillNoChange: (value: string) => void;
-  onAutoRoundFigureChange: (value: boolean) => void;
-  onCustomerChange: (key: keyof CustomerDraft, value: string) => void;
-  onDiscountAmountChange: (value: string) => void;
-  onFinalAmountOverrideChange: (value: string) => void;
-  onCreateItemName: (name: string, material: MetalType) => Promise<boolean>;
-  onItemChange: (index: number, key: keyof BillItemDraft, value: string) => void;
-  onLanguageChange: (value: Language) => void;
-  onSilverRateChange: (value: string) => void;
-  onReceiptCashChange: (value: string) => void;
-  onReceiptGrossWeightChange: (value: string) => void;
-  onReceiptMaterialChange: (value: MetalType) => void;
-  onReceiptTouchChange: (value: string) => void;
-  onReceiptTypeChange: (value: ReceiptType) => void;
-  onRateCutAmountChange: (value: string) => void;
-  onRateCutAdjustsLabourChange: (value: boolean) => void;
-  onRateCutFineChange: (value: string) => void;
-  onJangadReturn?: () => void;
-  onNoteChange?: (value: string) => void;
-  onRemoveItem: (index: number) => void;
-  onReminderDaysChange: (value: string) => void;
-  onReminderEnabledChange: (value: boolean) => void;
-  onReminderTimeChange: (value: string) => void;
-  onSaveBill: () => void;
-  onSelectPartySuggestion: (folder: PartyFolder) => void;
-  onShareSaved: () => void;
-  onShareSavedToCustomer: () => void;
-  partyFolders: PartyFolder[];
-  rates: MetalRates;
-  receiptMaterial: MetalType;
-  receiptType: ReceiptType;
-  rateCutAmount: string;
-  rateCutAdjustsLabour: boolean;
-  rateCutAutoAmount: number;
-  rateCutBookedLabel: string;
-  rateCutFine: string;
-  reminderDays: string;
-  reminderEnabled: boolean;
-  reminderTime: string;
-  receivedCash: string;
-  finalAmountOverride: string;
-  receivedFine: string;
-  receivedGrossWeight: string;
-  receivedTouch: string;
-  totals: {
-    autoNetTotal: number;
-    baseLabourSubtotal: number;
-    discountValue: number;
-    finalAmountOverride: string;
-    netTotal: number;
-    rateCutValue: number;
-    receivedValue: number;
-    roundFigureEnabled: boolean;
-    roundedNetTotal: number;
-    subtotal: number;
-  };
-}) {
-  const [hiddenPartySuggestionIds, setHiddenPartySuggestionIds] = useState<string[]>([]);
-  const [editingItemIndex, setEditingItemIndex] = useState<number | null>(null);
-  const [collapsedItemIds, setCollapsedItemIds] = useState<string[]>([]);
-  const partySuggestionQuery = customer.name.trim();
-  const selectedPartyFolder = useMemo(
-    () => (customer.id ? partyFolders.find((folder) => folder.customerId === customer.id) ?? null : null),
-    [customer.id, partyFolders],
-  );
-  const partySuggestions = useMemo(
-    () =>
-      partySuggestionQuery
-        ? partyFolders
-            .filter((folder) => !hiddenPartySuggestionIds.includes(folder.customerId))
-            .filter((folder) => folder.customerId !== customer.id)
-            .filter((folder) => partyMatchesSearch(folder, partySuggestionQuery))
-            .slice(0, 6)
-        : [],
-    [customer.id, hiddenPartySuggestionIds, partyFolders, partySuggestionQuery],
-  );
-  const effectiveRateCutAmount = rateCutAmount.trim() ? parseAmount(rateCutAmount) : rateCutAutoAmount;
-  const hasRateCutFine = parseAmount(rateCutFine) > 0;
-  const createBookedRateLines = rateSummaryLines(billPayload.items);
-      const createFineTotal = calculateTotalFine(billPayload.items);
-  const createLabourTotal = totals.baseLabourSubtotal;
-  const [jangadTab, setJangadTab] = useState<'bill' | 'return'>('bill');
-
-  return (
-    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
-      <View style={styles.topNav}>
-        <Pressable onPress={onBack} style={[styles.button, styles.secondaryButton, styles.navButton]}>
-          <Text style={styles.secondaryButtonText}>Back</Text>
-        </Pressable>
-        <Text numberOfLines={2} style={styles.screenTitle}>Create bill</Text>
-        <Pressable disabled={isSaving} onPress={onSaveBill} style={[styles.button, styles.navButton]}>
-          <Text style={styles.buttonText}>{isSaving ? '...' : t(language, 'saveBill')}</Text>
-        </Pressable>
-        {billPayload.billType === 'jangad' && onJangadReturn ? (
-          <View style={styles.billFilterRow}>
-            <Pressable onPress={() => setJangadTab('bill')} style={[styles.billFilterBtn, jangadTab === 'bill' && styles.billFilterBtnActive]}>
-              <Text style={[styles.billFilterText, jangadTab === 'bill' && styles.billFilterTextActive]}>Bill</Text>
-            </Pressable>
-            <Pressable onPress={() => { setJangadTab('return'); onJangadReturn(); }} style={[styles.billFilterBtn, jangadTab === 'return' && styles.billFilterBtnActive]}>
-              <Text style={[styles.billFilterText, jangadTab === 'return' && styles.billFilterTextActive]}>Return</Text>
-            </Pressable>
-          </View>
-        ) : null}
-      </View>
-
-      <View style={styles.panel}>
-        <Text style={styles.panelTitle}>Bill setup</Text>
-        <View style={styles.formGrid}>
-          <Field label={t(language, 'billNo')} value={String(billNo)} onChangeText={onBillNoChange} />
-        <DateField label={t(language, 'date')} value={billDate} onChangeText={onBillDateChange} />
-        </View>
-        <View style={styles.formGrid}>
-          <View style={styles.segmentBlock}>
-            <Text style={styles.fieldLabel}>{t(language, 'language')}</Text>
-            <LanguageSelector language={language} onChange={onLanguageChange} />
-          </View>
-        </View>
-      </View>
-
-      <Section title="Party" />
-      <View style={styles.panel}>
-        <View style={styles.formGrid}>
-          <Field label={t(language, 'name')} value={customer.name} onChangeText={(value) => onCustomerChange('name', value)} />
-          <Field
-            keyboardType="phone-pad"
-            label={t(language, 'mobile')}
-            value={customer.mobile}
-            onChangeText={(value) => onCustomerChange('mobile', value)}
-          />
-          <Field
-            label={t(language, 'address')}
-            multiline
-            value={customer.address}
-            onChangeText={(value) => onCustomerChange('address', value)}
-          />
-        </View>
-        {selectedPartyFolder ? (
-          <View style={styles.selectedPartyBadge}>
-            <Text style={styles.selectedPartyText}>Existing party: {selectedPartyFolder.customerName}</Text>
-          </View>
-        ) : null}
-        {partySuggestions.length ? (
-          <View style={styles.partySuggestionList}>
-            {partySuggestions.map((folder) => (
-              <View key={folder.customerId} style={styles.partySuggestionRow}>
-                <Pressable
-                  onPress={() => onSelectPartySuggestion(folder)}
-                  style={styles.partySuggestionBody}
-                >
-                  <Text style={styles.partySuggestionName}>{folder.customerName}</Text>
-                  <Text style={styles.partySuggestionMeta}>
-                    {folder.billCount} bills | {folder.customerMobile || 'No mobile'} | {folder.customerAddress || 'No address'}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() =>
-                    setHiddenPartySuggestionIds((current) =>
-                      current.includes(folder.customerId) ? current : [...current, folder.customerId],
-                    )
-                  }
-                  style={styles.partySuggestionHide}
-                >
-                  <Text style={styles.partySuggestionHideText}>x</Text>
-                </Pressable>
-              </View>
-            ))}
-          </View>
-        ) : null}
-      </View>
-
-      <Section title={t(language, 'items')} />
-      {billPayload.items.map((item, index) => (
-          <Pressable
-            key={item.id}
-            onPress={() => setEditingItemIndex(index)}
-            style={styles.collapsedItemRow}
-          >
-            <View>
-              <Text style={styles.collapsedItemTitle}>{index + 1}. {item.itemName || 'Blank item'}</Text>
-              <Text style={styles.collapsedItemMeta}>
-                {formatCalcValue(parseAmount(item.fine), 3) || '0'} gm fine | ₹ {formatBillMoney(item.amount, autoRoundFigure)}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color="#cbd5e0" />
-          </Pressable>
-      ))}
-
-      {editingItemIndex !== null && (
-            <ItemEditor
-              index={editingItemIndex}
-              item={billPayload.items[editingItemIndex]}
-              itemNameOptions={itemNameOptions}
-              language={language}
-              rateInputValue={draftItems[editingItemIndex]?.rate ?? billPayload.items[editingItemIndex].rate}
-              autoRoundFigure={autoRoundFigure}
-              onChange={onItemChange}
-              onCreateItemName={onCreateItemName}
-              onRemove={onRemoveItem}
-              onDone={() => setEditingItemIndex(null)}
-              rates={rates}
-              removable={billPayload.items.length > 1}
-              billType={billPayload.billType}
-            />
-      )}
-
-      <Pressable
-        onPress={() => {
-          setCollapsedItemIds((current) => [...new Set([...current, ...billPayload.items.map((item) => item.id)])]);
-          onAddItem();
-        }}
-        style={[styles.button, styles.secondaryButton, styles.addItemButton]}
-      >
-        
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <Text style={styles.addItemButtonText}>{t(language, 'addItem')}</Text>
-        </View>
-      </Pressable>
-
-      {billPayload.billType === 'jangad' && onNoteChange ? (
-        <>
-          <Section title="Narration" />
-          <View style={styles.panel}>
-            <Field label="Note" multiline value={billPayload.note ?? ''} onChangeText={onNoteChange} />
-          </View>
-        </>
-      ) : null}
-      {billPayload.billType === 'estimate' ? (
-        <>
-          <Section title="Fine / cash received" />
-          <View style={styles.panel}>
-            <ReceiptTypeSelector receiptType={receiptType} onChange={onReceiptTypeChange} />
-            {receiptHasFine(receiptType) ? (
-              <View style={styles.formGrid}>
-                <View style={styles.segmentBlock}>
-                  <Text style={styles.fieldLabel}>Fine metal</Text>
-                  <MetalSelector material={receiptMaterial} onChange={onReceiptMaterialChange} />
-                </View>
-                <Field
-                  keyboardType="decimal-pad"
-                  label="Received GW (gm)"
-                  selectTextOnFocus
-                  value={receivedGrossWeight}
-                  onChangeText={onReceiptGrossWeightChange}
-                />
-                <Field keyboardType="decimal-pad" label="Touch %" selectTextOnFocus value={receivedTouch} onChangeText={onReceiptTouchChange} />
-                <Field editable={false} label="Fine calculated (gm)" value={receivedFine || '0'} onChangeText={() => undefined} />
-              </View>
-            ) : null}
-            {receiptHasCash(receiptType) ? (
-              <Field keyboardType="decimal-pad" label="Cash received for labour" selectTextOnFocus value={receivedCash} onChangeText={onReceiptCashChange} />
-            ) : null}
-            <View style={styles.formGrid}>
-              <Field
-                keyboardType="decimal-pad"
-                label="Rate cut fine less (gm)"
-                selectTextOnFocus
-                value={rateCutFine}
-                onChangeText={onRateCutFineChange}
-              />
-              <Field
-                keyboardType="decimal-pad"
-                label="Rate cut amount"
-                selectTextOnFocus
-                value={rateCutAmount}
-                onChangeText={onRateCutAmountChange}
-              />
-              <Field
-                keyboardType="decimal-pad"
-                label="Discount amount"
-                selectTextOnFocus
-                value={discountInputValue}
-                onChangeText={onDiscountAmountChange}
-              />
-            </View>
-            {hasRateCutFine ? (
-              <View style={styles.compactHelpBlock}>
-                <Text style={styles.sectionHelp}>
-                  Suggested by booked rate: {formatBillMoney(rateCutAutoAmount, false)} | {rateCutBookedLabel}
-                </Text>
-                {effectiveRateCutAmount > 0 ? (
-                  <Text style={styles.sectionHelp}>
-                    (Added in labour: {formatBillMoney(effectiveRateCutAmount, totals.roundFigureEnabled)})
-                  </Text>
-                ) : null}
-              </View>
-            ) : null}
-            <View style={styles.formGrid}>
-              <View style={styles.segmentBlock}>
-                <Text style={styles.fieldLabel}>Auto round figure</Text>
-                <RoundFigureSelector enabled={autoRoundFigure} onChange={onAutoRoundFigureChange} />
-              </View>
-              <Field
-                keyboardType="decimal-pad"
-                label="Final amount override"
-                selectTextOnFocus
-                value={finalAmountOverride}
-                onChangeText={onFinalAmountOverrideChange}
-              />
-            </View>
-            <View style={styles.totalGrid}>
-              <TotalTile label="Base labour" value={formatBillMoney(totals.baseLabourSubtotal, totals.roundFigureEnabled)} />
-              <TotalTile label="Amount received" value={formatBillMoney(totals.receivedValue, totals.roundFigureEnabled)} />
-              {hasRateCutFine ? (
-                <TotalTile label="Rate cut amount" value={formatBillMoney(totals.rateCutValue, totals.roundFigureEnabled)} />
-              ) : null}
-              {totals.discountValue > 0 ? (
-                <TotalTile label="Discount" value={formatBillMoney(totals.discountValue, totals.roundFigureEnabled)} />
-              ) : null}
-              {totals.finalAmountOverride ? <TotalTile label="Auto net" value={formatBillMoney(totals.autoNetTotal)} /> : null}
-              <TotalTile highlight label="Amount due" value={formatBillMoney(totals.netTotal, totals.roundFigureEnabled)} />
-            </View>
-            <View style={styles.createRateCutBaseBar}>
-              <Text style={styles.createRateCutBaseTitle}>Rate cut base</Text>
-              <View style={styles.createRateCutBaseGrid}>
-                <Text style={styles.createRateCutBaseText}>Fine total: {formatCalcValue(createFineTotal, 3) || '0'} gm</Text>
-                <Text style={styles.createRateCutBaseText}>
-                  Labour total: {formatBillMoney(createLabourTotal, totals.roundFigureEnabled)}
-                </Text>
-              </View>
-              {createBookedRateLines.length ? (
-                <View style={styles.createBookedRateList}>
-                  {createBookedRateLines.map((line) => (
-                    <Text key={line} style={styles.createBookedRateText}>
-                      {line}
-                    </Text>
-                  ))}
-                </View>
-              ) : null}
-            </View>
-          </View>
-        </>
-      ) : null}
-
-      <Section title="Fine reminder mohalt" />
-      <View style={styles.panel}>
-        <View style={styles.formGrid}>
-          <View style={styles.segmentBlock}>
-            <Text style={styles.fieldLabel}>Reminder</Text>
-            <RoundFigureSelector enabled={reminderEnabled} onChange={onReminderEnabledChange} />
-          </View>
-          <Field
-            keyboardType="number-pad"
-            label="Mohlat days"
-            selectTextOnFocus
-            value={reminderDays}
-            onChangeText={onReminderDaysChange}
-          />
-          <Field label="Reminder time" selectTextOnFocus value={reminderTime} onChangeText={onReminderTimeChange} />
-        </View>
-        <Text style={styles.sectionHelp}>
-          Reminder due: {formatDateTime(buildDueAtFromBillDate(billDate, reminderDays, reminderTime))}
-        </Text>
-      </View>
-
-      <View style={styles.actionBar}>
-        <Pressable disabled={isSaving} onPress={onSaveBill} style={styles.button}>
-          <Text style={styles.buttonText}>{isSaving ? 'Saving...' : t(language, 'saveBill')}</Text>
-        </Pressable>
-        <Pressable
-          disabled={!lastSavedPayload}
-          onPress={onShareSaved}
-          style={[styles.button, styles.printButton, !lastSavedPayload && styles.disabledButton]}
-        >
-          <Text style={styles.buttonText}>Other share</Text>
-        </Pressable>
-        <Pressable
-          disabled={!lastSavedPayload}
-          onPress={onShareSavedToCustomer}
-          style={[styles.button, styles.customerShareButton, !lastSavedPayload && styles.disabledButton]}
-        >
-          <Text style={styles.buttonText}>Customer share</Text>
-        </Pressable>
-      </View>
-
-      <Section title="Preview" />
-      <BillPreviewFrame payload={billPayload} />
-    </ScrollView>
-  );
-}
-
-function RatesScreen({
-  isSyncing,
-  onBack,
-  onRateDateChange,
-  onSaveRates,
-  onSilverRateChange,
-  onSync,
-  rateDate,
-  silverRate,
-  syncMessage,
-}: {
-  isSyncing: boolean;
-  onBack: () => void;
-  onRateDateChange: (value: string) => void;
-  onSaveRates: () => void;
-  onSilverRateChange: (value: string) => void;
-  onSync: () => void;
-  rateDate: string;
-  silverRate: string;
-  syncMessage: string;
-}) {
-  return (
-    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
-      <PageHeader title="Rate update" onBack={onBack} />
-      <View style={styles.panel}>
-        <View style={styles.formGrid}>
-          <DateField label="Rate date" value={rateDate} onChangeText={onRateDateChange} />
-          <Field keyboardType="numeric" label="Silver 1kg" value={silverRate} onChangeText={onSilverRateChange} />
-        </View>
-        <View style={styles.actionBar}>
-          <Pressable onPress={onSaveRates} style={styles.button}>
-            <Text style={styles.buttonText}>Save rates</Text>
-          </Pressable>
-          <Pressable disabled={isSyncing} onPress={onSync} style={[styles.button, styles.secondaryButton]}>
-            <Text style={styles.secondaryButtonText}>{isSyncing ? 'Updating...' : 'Update data'}</Text>
-          </Pressable>
-        </View>
-      </View>
-      <Text style={styles.syncMessage}>{syncMessage}</Text>
-    </ScrollView>
-  );
-}
-
-function MarketStockScreen({
-  marketDate,
-  marketSilverWeight,
-  marketNote,
-  onBack,
-  onDateChange,
-  onSilverWeightChange,
-  onNoteChange,
-  onSave,
-  rows,
-}: {
-  marketDate: string;
-  marketSilverWeight: string;
-  marketNote: string;
-  onBack: () => void;
-  onDateChange: (value: string) => void;
-  onSilverWeightChange: (value: string) => void;
-  onNoteChange: (value: string) => void;
-  onSave: () => void;
-  rows: MarketStockSummary[];
-}) {
-  const [search, setSearch] = useState('');
-  const selectedRow = rows.find((row) => row.runDate === marketDate);
-  const filteredRows = rows.filter((row) =>
-    includesSearch([row.runDate, formatDateForBill(row.runDate), row.note, row.billCount, row.silverRemaining], search),
-  );
-
-  return (
-    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
-      <PageHeader title="Market stock" onBack={onBack} />
-      <View style={styles.panel}>
-        <Text style={styles.panelTitle}>Aaj kitna maal leke nikle</Text>
-        <Text style={styles.sectionHelp}>
-          Silver ko kg me daalo. Bills bante hi us date ke sold weight se balance automatic less hota jayega.
-        </Text>
-        <View style={styles.formGrid}>
-        <DateField label="Date" value={marketDate} onChangeText={onDateChange} />
-          <Field keyboardType="decimal-pad" label="Silver carried (kg)" selectTextOnFocus value={marketSilverWeight} onChangeText={onSilverWeightChange} />
-          <Field label="Note" multiline value={marketNote} onChangeText={onNoteChange} />
-        </View>
-        {selectedRow ? (
-          <Text style={styles.sectionHelp}>
-            Saved: Silver {gmText(selectedRow.silverWeight)} | Silver {kgTextFromGm(selectedRow.silverWeight)}
-          </Text>
-        ) : null}
-        <Pressable onPress={onSave} style={styles.button}>
-          <Text style={styles.buttonText}>Save market stock</Text>
-        </Pressable>
-      </View>
-
-      <Section title="Date wise balance" />
-      <SearchBox placeholder="Search date or note" value={search} onChangeText={setSearch} />
-      <View style={styles.recentList}>
-        {filteredRows.length ? (
-          filteredRows.map((row) => (
-            <View key={row.id} style={styles.marketRow}>
-              <View style={styles.billRowMain}>
-                <Text style={styles.recentBillNo}>{formatDateForBill(row.runDate)}</Text>
-                <Text style={styles.recentCustomer}>{row.note || `${row.billCount} bills created`}</Text>
-              </View>
-              <View style={styles.marketGrid}>
-                <SummaryTile label="Silver taken" value={gmText(row.silverWeight)} />
-                <SummaryTile label="Silver sold" value={gmText(row.silverSold)} />
-                <SummaryTile label="Silver balance" value={gmText(row.silverRemaining)} />
-                <SummaryTile label="Silver taken" value={kgTextFromGm(row.silverWeight)} />
-                <SummaryTile label="Silver sold" value={kgTextFromGm(row.silverSold)} />
-                <SummaryTile label="Silver balance" value={kgTextFromGm(row.silverRemaining)} />
-              </View>
-            </View>
-          ))
-        ) : (
-          <Text style={styles.emptyText}>{rows.length ? 'Search me market entry nahi mili.' : 'Abhi market stock entry nahi hai.'}</Text>
-        )}
-      </View>
-    </ScrollView>
-  );
-}

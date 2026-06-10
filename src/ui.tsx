@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 type BottomNavProps = {
   current: string;
@@ -9,17 +10,61 @@ type BottomNavProps = {
 export function BottomNav({ current, onNavigate }: BottomNavProps) {
   return (
     <View style={styles.container}>
-      <NavButton label="Home" active={current === 'home'} onPress={() => onNavigate('home')} />
-      <NavButton label="Bills" active={current === 'bills'} onPress={() => onNavigate('bills')} />
-      <NavButton label="Parties" active={current === 'parties'} onPress={() => onNavigate('parties')} />
-      <NavButton label="Suppliers" active={current === 'suppliers'} onPress={() => onNavigate('suppliers')} />
+      <NavButton 
+        label="Home" 
+        icon={current === 'home' ? "home" : "home-outline"} 
+        active={current === 'home'} 
+        onPress={() => onNavigate('home')} 
+      />
+      <NavButton 
+        label="Bills" 
+        icon={current === 'bills' ? "menu" : "menu-outline"} 
+        active={current === 'bills'} 
+        onNavigate={() => onNavigate('bills')} 
+      />
+      <NavButton 
+        label="Parties" 
+        icon={current === 'parties' ? "add-circle" : "add-circle-outline"} 
+        active={current === 'parties'} 
+        onNavigate={() => onNavigate('parties')} 
+      />
+      <NavButton 
+        label="Suppliers" 
+        icon={current === 'suppliers' ? "settings" : "settings-outline"} 
+        active={current === 'suppliers'} 
+        onNavigate={() => onNavigate('suppliers')} 
+      />
     </View>
   );
 }
 
-function NavButton({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+function NavButton({ 
+  label, 
+  icon, 
+  active, 
+  onPress, 
+  onNavigate 
+}: { 
+  label: string; 
+  icon: any; 
+  active: boolean; 
+  onPress?: () => void;
+  onNavigate?: () => void;
+}) {
+  const handlePress = onPress || onNavigate;
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.button, active && styles.active, pressed && styles.pressed]}>
+    <Pressable 
+      onPress={handlePress} 
+      style={({ pressed }) => [
+        styles.button, 
+        pressed && styles.pressed
+      ]}
+    >
+      <Ionicons 
+        name={icon} 
+        size={22} 
+        color={active ? '#007a66' : '#666'} 
+      />
       <Text style={[styles.label, active && styles.activeLabel]}>{label}</Text>
     </Pressable>
   );
@@ -33,15 +78,15 @@ export function HeaderBar({ title, onCreate, onBack }: { title?: string; onCreat
           <Text style={styles.backText}>Back</Text>
         </Pressable>
       ) : (
-        <View style={{ width: 40 }} />
+        <View style={{ width: 60 }} />
       )}
       <Text numberOfLines={1} style={styles.headerTitle}>{title ?? ''}</Text>
       {onCreate ? (
         <Pressable onPress={onCreate} style={styles.headerActionBtn}>
-          <Text style={styles.headerAction}>＋</Text>
+          <Ionicons name="add" size={28} color="#007a66" />
         </Pressable>
       ) : (
-        <View style={{ width: 40 }} />
+        <View style={{ width: 60 }} />
       )}
     </View>
   );
@@ -50,25 +95,23 @@ export function HeaderBar({ title, onCreate, onBack }: { title?: string; onCreat
 const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e6e6e6',
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
     backgroundColor: '#ffffff',
-    height: 56,
+    height: 60,
     alignItems: 'center',
     justifyContent: 'space-around',
+    paddingBottom: 4,
   },
   button: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 8,
   },
   label: {
-    fontSize: 12,
-    color: '#263238',
-  },
-  active: {
-    backgroundColor: '#e8f7f1',
+    fontSize: 11,
+    color: '#666',
+    marginTop: 2,
   },
   activeLabel: {
     fontWeight: '700',
@@ -82,28 +125,29 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#eee',
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
     backgroundColor: '#fff',
   },
   headerTitle: {
     fontSize: 18,
     fontWeight: '700',
     color: '#263238',
+    textAlign: 'center',
   },
   headerActionBtn: {
-    padding: 8,
-  },
-  headerAction: {
-    fontSize: 22,
-    color: '#007a66',
+    width: 60,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
   },
   backBtn: {
-    padding: 8,
+    width: 60,
+    justifyContent: 'center',
   },
   backText: {
-    fontSize: 16,
     color: '#007a66',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

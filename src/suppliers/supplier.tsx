@@ -4,7 +4,16 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import type { MetalType, SupplierAccount, SupplierLedgerSummary, SupplierTransaction, SupplierTransactionMode } from '../types';
 import { formatCalcValue } from '../utils/calculations';
 import { formatDateForBill, formatMoney, localIsoDate, parseAmount } from '../utils/format';
-import type { SupplierManualDraft } from './supplier-sql';
+type SupplierManualDraft = {
+  id: string;
+  entryDate: string;
+  name: string;
+  mobile: string;
+  address: string;
+  openingFinePayable: string;
+  openingAmountPayable: string;
+  openingNote: string;
+};
 import Card from '../components/Card';
 import FAB from '../components/FAB';
 import { HeaderBar } from '../ui';
@@ -90,17 +99,17 @@ function supplierTransactionModeLabel(mode: SupplierTransactionMode) {
   }
 }
 
-function metalRateLabel(material: MetalType) {
-  return material === 'gold' ? 'Gold / 10 gm' : 'Silver / 1 kg';
+function metalRateLabel(_material: MetalType) {
+  return 'Silver / 1 kg';
 }
 
-function fineValueFromBookedRate(material: MetalType, fineWeight: string | number, bookedRate: string | number) {
+function fineValueFromBookedRate(_material: MetalType, fineWeight: string | number, bookedRate: string | number) {
   const fine = parseAmount(fineWeight);
   const rate = parseAmount(bookedRate);
   if (fine <= 0 || rate <= 0) {
     return 0;
   }
-  return material === 'gold' ? (fine * rate) / 10 : (fine * rate) / 1000;
+  return (fine * rate) / 1000;
 }
 
 function SupplierHeader({ onBack, title }: { onBack: () => void; title: string }) {
@@ -184,16 +193,11 @@ function Segment<T extends string>({
   );
 }
 
-function MetalSelector({ material, onChange }: { material: MetalType; onChange: (value: MetalType) => void }) {
+function MetalSelector({ material }: { material: MetalType; onChange?: (value: MetalType) => void }) {
   return (
-    <Segment
-      options={[
-        { label: 'Gold', value: 'gold' },
-        { label: 'Silver', value: 'silver' },
-      ]}
-      value={material}
-      onChange={onChange}
-    />
+    <View style={styles.field}>
+      <Text style={styles.fieldLabel}>Silver</Text>
+    </View>
   );
 }
 
@@ -446,7 +450,6 @@ export function SupplierTransactScreen({ ledger, onBack, onSaveSupplierTransacti
             { label: 'Bank paid', value: 'bank_payment' },
             { label: 'Split paid', value: 'split_payment' },
             { label: 'Metal paid', value: 'metal_paid' },
-            { label: 'Discount', value: 'discount' },
           ]}
           value={mode}
           onChange={setMode}
@@ -472,9 +475,7 @@ export function SupplierTransactScreen({ ledger, onBack, onSaveSupplierTransacti
           {mode === 'bank_payment' || mode === 'split_payment' ? (
             <SupplierField keyboardType="decimal-pad" label="Bank paid" selectTextOnFocus value={bankAmount} onChangeText={setBankAmount} />
           ) : null}
-          {mode === 'discount' ? (
-            <SupplierField keyboardType="decimal-pad" label="Discount" selectTextOnFocus value={discountAmount} onChangeText={setDiscountAmount} />
-          ) : null}
+          <SupplierField keyboardType="decimal-pad" label="Discount (optional)" selectTextOnFocus value={discountAmount} onChangeText={setDiscountAmount} />
           <SupplierField label="Narration" multiline value={note} onChangeText={setNote} />
         </View>
         <Pressable disabled={isSavingTransaction} onPress={submitTransaction} style={[styles.primaryButton, isSavingTransaction && styles.disabledButton]}>
@@ -559,6 +560,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     padding: 14,
+  },
+  field: {
+    marginBottom: 8,
   },
   fieldBlock: {
     gap: 6,
