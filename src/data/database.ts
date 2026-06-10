@@ -3289,6 +3289,10 @@ export async function repairMirroredDiscountRows(db: LocalDatabase) {
 }
 
 export async function deletePartyWithBills(db: LocalDatabase, customerId: string) {
+  await db.runAsync('DELETE FROM bill_items WHERE bill_id IN (SELECT id FROM bills WHERE customer_id = ?)', [customerId]);
+  await db.runAsync('DELETE FROM bill_transactions WHERE bill_id IN (SELECT id FROM bills WHERE customer_id = ?)', [customerId]);
+  await db.runAsync('DELETE FROM bill_reminders WHERE bill_id IN (SELECT id FROM bills WHERE customer_id = ?)', [customerId]);
+  await db.runAsync('DELETE FROM party_transactions WHERE customer_id = ?', [customerId]);
   await db.runAsync('DELETE FROM bills WHERE customer_id = ?', [customerId]);
   await db.runAsync('DELETE FROM customers WHERE id = ?', [customerId]);
 }

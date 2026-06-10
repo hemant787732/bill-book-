@@ -1,0 +1,14 @@
+ALTER TABLE rates ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE item_names ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE bill_reminders ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE bill_items ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE bill_transactions ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE party_transactions ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE supplier_accounts ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE supplier_transactions ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE cash_bank_entries ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE market_runs ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE jangad_return_vouchers ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
+ALTER TABLE jangad_return_items ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'synced';
