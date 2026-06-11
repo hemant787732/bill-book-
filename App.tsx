@@ -4526,7 +4526,7 @@ function PartiesScreen({
                 <PartyLedgerPills ledger={partyLedgerMap.get(folder.customerId)} />
               </View>
               <View style={styles.folderAmountCol}>
-                <Text style={styles.folderAmountFine}>{ledgerFineValue(partyLedgerMap.get(folder.customerId))}</Text>
+                <Text style={styles.folderAmountFine}>{partyLedgerMap.get(folder.customerId) ? ledgerFineValue(partyLedgerMap.get(folder.customerId)!) : `${formatCalcValue(folder.openingFineBalance, 3)} gm`}</Text>
                 <Text style={styles.folderAmountDue}>{formatMoney(partyLedgerMap.get(folder.customerId)?.labourBalance ?? folder.totalAmount)}</Text>
               </View>
             </Pressable>

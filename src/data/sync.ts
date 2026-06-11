@@ -1,6 +1,21 @@
 import { LocalDatabase } from './dbTypes';
 import { supabase } from './supabase';
 
+const DB_NULL_ERR = 'NativeDatabase.prepareAsync';
+
+function isDbNullError(err: unknown): boolean {
+  return formatError(err).includes(DB_NULL_ERR);
+}
+
+async function checkDbHealthy(db: LocalDatabase): Promise<boolean> {
+  try {
+    await db.getAllAsync('SELECT 1');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const BILL_TYPES = ['estimate', 'jangad'] as const;
 const METAL_TYPES = ['silver', 'gold'] as const;
 const LANGUAGES = ['en', 'hi', 'gu'] as const;
@@ -357,6 +372,10 @@ export function sanitizeRow(table: string, row: any): Record<string, any> {
 
 async function downloadFromSupabase(db: LocalDatabase): Promise<string[]> {
   if (!supabase) return [];
+  if (!(await checkDbHealthy(db))) {
+    console.warn('Download aborted: database not accessible');
+    return [];
+  }
   const errors: string[] = [];
 
   for (const table of TABLES) {
@@ -393,6 +412,10 @@ function isDuplicateKeyError(err: unknown): boolean {
 
 async function uploadToSupabase(db: LocalDatabase): Promise<string[]> {
   if (!supabase) return [];
+  if (!(await checkDbHealthy(db))) {
+    console.warn('Upload aborted: database not accessible');
+    return [];
+  }
   const errors: string[] = [];
 
   for (const table of TABLES) {
@@ -472,6 +495,9 @@ export async function downloadRowsByIds(db: LocalDatabase, table: string, ids: s
 
 export async function restoreFromSupabaseBackup(db: LocalDatabase): Promise<{ ok: boolean; message: string }> {
   if (!supabase) return { ok: false, message: 'Supabase not configured. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in .env.' };
+  if (!(await checkDbHealthy(db))) {
+    return { ok: false, message: 'Database not accessible' };
+  }
   try {
     const errors: string[] = [];
     for (const table of TABLES) {
