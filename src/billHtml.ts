@@ -927,13 +927,11 @@ function buildEstimateBillHtml(payload: BillPayload, transactions: BillTransacti
           <div class="muted top-right">${escapeHtml(t(language, 'date'))} : ${escapeHtml(formatDateForBill(payload.billDate))}</div>
         </section>
         ${ownerContactCardsHtml()}
-        ${shopAddressHtml('address-strip')}
 
         <section class="line-grid">
           <div class="line">${escapeHtml(t(language, 'name'))} : ${escapeHtml(
             translateNameOrItem(payload.customer.name, language),
           )}</div>
-          <div class="line">${escapeHtml(t(language, 'at'))} : ${escapeHtml(payload.customer.address)}</div>
           <div class="line line-full">${escapeHtml(t(language, 'mobile'))} : ${escapeHtml(payload.customer.mobile)}</div>
         </section>
 
@@ -1265,7 +1263,6 @@ function buildWholesaleBillHtml(payload: BillPayload, transactions: BillTransact
             <h1>${escapeHtml(SHOP.name)}</h1>
             <p>${escapeHtml(SHOP.tagline)}</p>
             ${ownerContactsHtml()}
-            ${shopAddressHtml()}
           </div>
         </section>
 
@@ -1278,9 +1275,6 @@ function buildWholesaleBillHtml(payload: BillPayload, transactions: BillTransact
               )}</span></div>
               <div class="line"><span class="label">${escapeHtml(t(language, 'mobile'))}</span><span class="value">${escapeHtml(
                 payload.customer.mobile,
-              )}</span></div>
-              <div class="line"><span class="label">${escapeHtml(t(language, 'address'))}</span><span class="value">${escapeHtml(
-                payload.customer.address,
               )}</span></div>
             </div>
             <div class="box">
@@ -1453,11 +1447,9 @@ function buildJangadBillHtml(payload: BillPayload, transactions: BillTransaction
           <div class="muted top-right">${escapeHtml(t(language, 'date'))} : ${escapeHtml(formatDateForBill(payload.billDate))}</div>
         </section>
         ${ownerContactCardsHtml()}
-        ${shopAddressHtml('address-strip')}
 
         <section class="line-grid">
           <div class="line">${escapeHtml(t(language, 'name'))} : ${escapeHtml(translateNameOrItem(payload.customer.name, language))}</div>
-          <div class="line">${escapeHtml(t(language, 'at'))} : ${escapeHtml(payload.customer.address)}</div>
           <div class="line line-full">${escapeHtml(t(language, 'mobile'))} : ${escapeHtml(payload.customer.mobile)}</div>
         </section>
 

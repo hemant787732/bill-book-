@@ -6901,15 +6901,9 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
           </View>
         ))}
       </View>
-      <View style={styles.previewAddressStrip}>
-        {SHOP.addressLines.map((line) => (
-          <Text key={line} style={styles.previewAddressStripText}>{line}</Text>
-        ))}
-      </View>
 
       <View style={styles.previewLineGrid}>
         <Text style={styles.previewLine}>{t(language, 'name')} : {customerName}</Text>
-        <Text style={styles.previewLine}>{t(language, 'at')} : {payload.customer.address || 'Address'}</Text>
         <Text style={styles.previewLine}>{t(language, 'mobile')} : {payload.customer.mobile || 'Mobile'}</Text>
       </View>
 
