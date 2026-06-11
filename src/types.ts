@@ -20,6 +20,7 @@ export interface BillItemDraft {
   labourType: LabourType;
   packetLess: string;
   fine: string;
+  other: string;
   amount: string;
   // Supplier the metal for this line came from (per-item). Drives auto-posting
   // of a supplier payable when the bill is saved.

@@ -171,6 +171,7 @@ type BillItemRow = {
   rate: string;
   labour_type: LabourType;
   labour: string;
+  other: string;
   amount: string;
   supplier_id: string;
   updated_at: string;
@@ -453,6 +454,7 @@ function mapBillItem(row: BillItemRow): BillItemRecord {
     rate: row.rate ?? '',
     labourType: row.labour_type ?? 'gw',
     labour: row.labour,
+    other: row.other ?? '',
     amount: row.amount,
     supplierId: row.supplier_id ?? '',
     updatedAt: row.updated_at,
@@ -666,6 +668,7 @@ function inputItemBusinessSignature(item: BillItemDraft, index: number) {
     rate: numberValue(item.rate),
     labourType: textValue(item.labourType ?? 'gw'),
     labour: numberValue(item.labour),
+    other: numberValue(item.other),
     amount: numberValue(item.amount),
     supplierId: textValue(item.supplierId ?? ''),
   };
@@ -684,6 +687,7 @@ function rowItemBusinessSignature(item: BillItemRow) {
     rate: numberValue(item.rate),
     labourType: textValue(item.labour_type ?? 'gw'),
     labour: numberValue(item.labour),
+    other: numberValue(item.other),
     amount: numberValue(item.amount),
     supplierId: textValue(item.supplier_id ?? ''),
   };
@@ -1813,8 +1817,8 @@ export async function createBill(db: LocalDatabase, input: BillSaveInput) {
   for (const [index, item] of cleanItems.entries()) {
     await db.runAsync(
       `INSERT INTO bill_items
-        (id, bill_id, line_no, material, item_name, weight, packet_less, touch, fine, pcs, rate, labour_type, labour, amount, supplier_id, updated_at, sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        (id, bill_id, line_no, material, item_name, weight, packet_less, touch, fine, pcs, rate, labour_type, labour, other, amount, supplier_id, updated_at, sync_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         createId('item'),
         billId,
@@ -1829,6 +1833,7 @@ export async function createBill(db: LocalDatabase, input: BillSaveInput) {
         item.rate.trim(),
         item.labourType ?? 'gw',
         item.labour.trim(),
+        item.other?.trim() ?? '',
         String(parseAmount(item.amount) || item.amount.trim()),
         item.supplierId?.trim() ?? '',
         timestamp,
@@ -1951,8 +1956,8 @@ export async function updateBill(db: LocalDatabase, billId: string, input: BillS
   for (const [index, item] of cleanItems.entries()) {
     await db.runAsync(
       `INSERT INTO bill_items
-        (id, bill_id, line_no, material, item_name, weight, packet_less, touch, fine, pcs, rate, labour_type, labour, amount, supplier_id, updated_at, sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        (id, bill_id, line_no, material, item_name, weight, packet_less, touch, fine, pcs, rate, labour_type, labour, other, amount, supplier_id, updated_at, sync_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         createId('item'),
         billId,
@@ -1967,6 +1972,7 @@ export async function updateBill(db: LocalDatabase, billId: string, input: BillS
         item.rate.trim(),
         item.labourType ?? 'gw',
         item.labour.trim(),
+        item.other?.trim() ?? '',
         String(parseAmount(item.amount) || item.amount.trim()),
         item.supplierId?.trim() ?? '',
         timestamp,
@@ -3396,8 +3402,8 @@ export async function restoreBackupData(db: LocalDatabase, backup: unknown) {
     await db.runAsync(
       `INSERT OR REPLACE INTO bill_items
         (id, bill_id, line_no, material, item_name, weight, packet_less, touch, fine, pcs, rate, labour_type,
-         labour, amount, updated_at, sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+         labour, other, amount, updated_at, sync_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         backupText(item, 'id') || createId('item'),
         billId,
@@ -3412,6 +3418,7 @@ export async function restoreBackupData(db: LocalDatabase, backup: unknown) {
         backupText(item, 'rate'),
         backupOneOf<LabourType>(item, 'labour_type', ['gw', 'pcs'], 'gw'),
         backupText(item, 'labour'),
+        backupText(item, 'other') ?? '',
         backupText(item, 'amount'),
         backupText(item, 'updated_at') || nowIso(),
       ],

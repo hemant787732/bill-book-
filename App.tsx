@@ -358,6 +358,7 @@ function emptyItem(material: MetalType = 'silver'): BillItemDraft {
     labour: '',
     labourType: 'gw',
     material,
+    other: '',
     packetLess: '',
     pcs: '1',
     rate: '',
@@ -1050,7 +1051,11 @@ function rateSummaryLines(items: BillItemDraft[]) {
 
 function labourSummaryLine(items: BillItemDraft[], autoRoundFigure = false) {
   const total = items.reduce((sum, item) => sum + calculateLabourCharge(item), 0);
-  return total > 0 ? `Labour: ${formatBillMoney(total, autoRoundFigure)}` : '';
+  const otherTotal = items.reduce((sum, item) => sum + parseAmount(item.other), 0);
+  const parts: string[] = [];
+  if (total > 0) parts.push(`Labour: ${formatBillMoney(total, autoRoundFigure)}`);
+  if (otherTotal > 0) parts.push(`Other: ${formatBillMoney(otherTotal, autoRoundFigure)}`);
+  return parts.join(' | ');
 }
 
 function bookedRateInfoFromItems(items: BillItemDraft[]) {
@@ -6761,6 +6766,12 @@ function ItemEditor({
                 />
                 <Field
                   keyboardType="decimal-pad"
+                  label="Other charge"
+                  value={item.other}
+                  onChangeText={(value) => onChange(index, 'other', value)}
+                />
+                <Field
+                  keyboardType="decimal-pad"
                   label="Rate/gm"
                   value={rateInputValue}
                   onChangeText={(value) => onChange(index, 'rate', value)}
@@ -6775,6 +6786,7 @@ function ItemEditor({
               <CalcPill label="Net wt" value={formatCalcValue(Math.max(parseAmount(item.weight) - parseAmount(item.packetLess), 0), 3)} />
               <CalcPill label="Fine" value={formatCalcValue(parseAmount(item.fine), 3)} />
               <CalcPill label="Labour" value={formatBillMoney(calculateLabourCharge(item), autoRoundFigure)} />
+              <CalcPill label="Other" value={formatBillMoney(parseAmount(item.other), autoRoundFigure)} />
             </View>
             ) : null}
 
@@ -6833,6 +6845,7 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
       labour: '',
       labourType: 'gw',
       material: 'silver',
+      other: '',
       packetLess: '',
       pcs: '',
       rate: '',
@@ -6857,6 +6870,8 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
   const previewWeightTotal = roundWeight(visibleItems.reduce((sum, item) => sum + Math.max(parseAmount(item.weight) - parseAmount(item.packetLess), 0), 0));
   const previewItemFineTotal = calculateTotalFine(visibleItems);
   const previewPcsTotal = visibleItems.reduce((sum, item) => sum + parseAmount(item.pcs), 0);
+  const previewLabourTotal = visibleItems.reduce((sum, item) => sum + calculateLabourCharge(item), 0);
+  const previewOtherTotal = visibleItems.reduce((sum, item) => sum + parseAmount(item.other), 0);
   const rateCutSummaryAmount = transactionSummary.rateCutAmount;
   const cashReceivedSummaryAmount = transactionSummary.cashReceivedDisplay;
   const { fineRows, moneyRows } = footerInfoSections(payload, transactions);
@@ -6934,6 +6949,7 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
             <Text style={[styles.previewBillCell, styles.previewBillFineCell]}>{t(language, 'fine')}</Text>
             <Text style={styles.previewBillSmallCell}>{t(language, 'pcs')}</Text>
             <Text style={[styles.previewBillCell, styles.previewBillLabourCell]}>{t(language, 'labour')}</Text>
+            <Text style={[styles.previewBillCell, styles.previewBillOtherCell]}>Other</Text>
             <Text style={[styles.previewBillCell, styles.previewBillAmountCell]}>{t(language, 'amount')}</Text>
           </View>
           {previewRows.map((item, index) => (
@@ -6946,6 +6962,9 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
               <Text style={[styles.previewBillCell, styles.previewBillFineCell]}>{formatPlainNumber(item.fine)}</Text>
               <Text style={styles.previewBillSmallCell}>{formatPlainNumber(item.pcs)}</Text>
               <Text style={[styles.previewBillCell, styles.previewBillLabourCell]}>{itemLabourDisplay(item)}</Text>
+              <Text style={[styles.previewBillCell, styles.previewBillOtherCell]}>
+                {item.other ? formatBillMoney(item.other, payload.autoRoundFigure) : ''}
+              </Text>
               <Text style={[styles.previewBillCell, styles.previewBillAmountCell]}>
                 {item.amount ? formatBillMoney(item.amount, payload.autoRoundFigure) : ''}
               </Text>
@@ -6957,7 +6976,8 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
             <Text style={[styles.previewBillCell, styles.previewBillTouchCell]} />
             <Text style={[styles.previewBillCell, styles.previewBillFineCell]}>{formatCalcValue(previewItemFineTotal, 3)}</Text>
             <Text style={styles.previewBillSmallCell}>{formatPlainNumber(previewPcsTotal)}</Text>
-            <Text style={[styles.previewBillCell, styles.previewBillLabourCell]}>{formatBillMoney(payload.subtotal, payload.autoRoundFigure)}</Text>
+            <Text style={[styles.previewBillCell, styles.previewBillLabourCell]}>{formatBillMoney(previewLabourTotal, payload.autoRoundFigure)}</Text>
+            <Text style={[styles.previewBillCell, styles.previewBillOtherCell]}>{formatBillMoney(previewOtherTotal, payload.autoRoundFigure)}</Text>
             <Text style={[styles.previewBillCell, styles.previewBillAmountCell]}>{formatBillMoney(payload.subtotal, payload.autoRoundFigure)}</Text>
           </View>
         </View>
@@ -8472,7 +8492,7 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   previewBillAmountCell: {
-    flex: 1.85,
+    flex: 1.2,
     textAlign: 'right',
   },
   previewBillCell: {
@@ -8500,6 +8520,10 @@ const styles = StyleSheet.create({
   },
   previewBillLabourCell: {
     flex: 1.04,
+  },
+  previewBillOtherCell: {
+    flex: 0.8,
+    textAlign: 'center',
   },
   previewBillRow: {
     borderBottomColor: '#b34654',

@@ -97,7 +97,8 @@ export function autoCalculateItem(item: BillItemDraft, rates: MetalRates): BillI
   const ratePerGram = item.rate ? parseAmount(item.rate) / 1000 : getMetalRatePerGram(item.material, rates);
   const metalValue = netWeight * ratePerGram;
   const labour = calculateLabourCharges(netWeight, item.labour, item.labourType, item.pcs);
-  const total = metalValue + labour;
+  const otherCharge = parseAmount(item.other);
+  const total = metalValue + labour + otherCharge;
 
   return {
     ...item,

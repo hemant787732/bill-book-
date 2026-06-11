@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS bill_items (
   rate TEXT NOT NULL DEFAULT '',
   labour_type TEXT NOT NULL DEFAULT 'gw',
   labour TEXT NOT NULL,
+  other TEXT NOT NULL DEFAULT '',
   amount TEXT NOT NULL,
   supplier_id TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL,
@@ -312,6 +313,7 @@ CREATE INDEX IF NOT EXISTS devices_user_idx ON devices(user_email);
 -- Safe to run repeatedly.
 -- =====================================================================
 ALTER TABLE bill_items            ADD COLUMN IF NOT EXISTS supplier_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE bill_items            ADD COLUMN IF NOT EXISTS other TEXT NOT NULL DEFAULT '';
 ALTER TABLE supplier_transactions ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT 'manual';
 ALTER TABLE supplier_transactions ADD COLUMN IF NOT EXISTS source_bill_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE market_runs           ADD COLUMN IF NOT EXISTS actual_silver_remaining REAL NOT NULL DEFAULT 0;

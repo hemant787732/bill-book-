@@ -112,7 +112,11 @@ function sanitizePayloadDiscountAmount(payload: BillPayload) {
 
 function labourSummaryLine(items: BillItemDraft[], autoRoundFigure = false) {
   const total = visibleItems(items).reduce((sum, item) => sum + calculateLabourCharge(item), 0);
-  return total > 0 ? `Labour: ${formatBillMoney(total, autoRoundFigure)}` : '';
+  const otherTotal = visibleItems(items).reduce((sum, item) => sum + parseAmount(item.other), 0);
+  const parts: string[] = [];
+  if (total > 0) parts.push(`Labour: ${formatBillMoney(total, autoRoundFigure)}`);
+  if (otherTotal > 0) parts.push(`Other: ${formatBillMoney(otherTotal, autoRoundFigure)}`);
+  return parts.join(' | ');
 }
 
 function billTransactionSummary(payload: BillPayload, transactions: BillTransaction[] = []) {
@@ -198,6 +202,7 @@ function paddedEstimateRows(items: BillItemDraft[]) {
       labour: '',
       labourType: 'gw',
       material: 'silver',
+      other: '',
       packetLess: '',
       pcs: '',
       rate: '',
@@ -214,6 +219,7 @@ function estimateTotalRow(payload: BillPayload) {
   const totalFine = calculateTotalFine(items);
   const totalPcs = items.reduce((sum, item) => sum + parseAmount(item.pcs), 0);
   const labourTotal = items.reduce((sum, item) => sum + calculateLabourCharge(item), 0);
+  const otherTotal = items.reduce((sum, item) => sum + parseAmount(item.other), 0);
   return `<tr class="total-row">
     ${cell('Total', 'item-cell')}
     ${cell(formatPlainNumber(totalWeight), 'num-cell weight-cell')}
@@ -221,6 +227,7 @@ function estimateTotalRow(payload: BillPayload) {
     ${cell(formatPlainNumber(totalFine), 'num-cell')}
     ${cell(formatPlainNumber(totalPcs), 'num-cell')}
     ${cell(formatBillMoney(labourTotal, payload.autoRoundFigure), 'num-cell')}
+    ${cell(formatBillMoney(otherTotal, payload.autoRoundFigure), 'num-cell')}
     ${cell(formatBillMoney(payload.subtotal, payload.autoRoundFigure), 'money-cell amount-cell')}
   </tr>`;
 }
@@ -401,8 +408,8 @@ function receiptSummaryHtml(payload: BillPayload, transactions: BillTransaction[
     : '';
   const packetLessHtml = packetLess ? `<div class="booked-rates"><div class="booked-line"><span>Packet note</span><b>${escapeHtml(packetLess)}</b></div></div>` : '';
   const labourHtml = labourSummary
-    ? `<div class="receipt-group receipt-group-wide"><div class="receipt-title">Labour note</div><div class="receipt-row"><span class="receipt-label">Labour total</span><span class="receipt-value">${escapeHtml(
-        labourSummary.replace(/^Labour:\s*/, ''),
+    ? `<div class="receipt-group receipt-group-wide"><div class="receipt-title">Labour &amp; charges</div><div class="receipt-row"><span class="receipt-label">Total</span><span class="receipt-value">${escapeHtml(
+        labourSummary,
       )}</span></div></div>`
     : '';
   const fineHtml = `<div class="receipt-group"><div class="receipt-title">Fine summary</div>${fineRows
@@ -447,6 +454,7 @@ function buildEstimateBillHtml(payload: BillPayload, transactions: BillTransacti
         ${cell(formatPlainNumber(item.fine), 'num-cell')}
         ${cell(formatPlainNumber(item.pcs), 'num-cell')}
         ${cell(itemLabourDisplay(item), 'num-cell')}
+        ${cell(item.other ? formatBillMoney(item.other, payload.autoRoundFigure) : '', 'num-cell')}
         ${cell(item.amount ? formatBillMoney(item.amount, payload.autoRoundFigure) : '', 'money-cell amount-cell')}
       </tr>`;
     })
@@ -687,13 +695,14 @@ function buildEstimateBillHtml(payload: BillPayload, transactions: BillTransacti
           overflow-wrap: anywhere;
           padding: 1mm 0.8mm;
         }
-        .item-col { width: 20%; }
-        .weight-col { width: 17%; }
-        .touch-col { width: 8%; }
-        .fine-col { width: 14%; }
+        .item-col { width: 19%; }
+        .weight-col { width: 14%; }
+        .touch-col { width: 7%; }
+        .fine-col { width: 12%; }
         .pcs-col { width: 5%; }
-        .labour-col { width: 12%; }
-        .amount-col { width: 24%; }
+        .labour-col { width: 11%; }
+        .other-col { width: 10%; }
+        .amount-col { width: 22%; }
         .item-cell {
           text-align: left;
         }
@@ -937,6 +946,7 @@ function buildEstimateBillHtml(payload: BillPayload, transactions: BillTransacti
               <th class="fine-col">${escapeHtml(t(language, 'fine'))}</th>
               <th class="pcs-col">${escapeHtml(t(language, 'pcs'))}</th>
               <th class="labour-col">${escapeHtml(t(language, 'labour'))}</th>
+              <th class="other-col">Other</th>
               <th class="amount-col">${escapeHtml(t(language, 'amount'))}</th>
             </tr>
           </thead>
@@ -1011,6 +1021,7 @@ function buildWholesaleRows(payload: BillPayload) {
         ${cell(formatPlainNumber(item.fine), 'right')}
         ${cell(formatPlainNumber(item.pcs), 'right')}
         ${cell(itemLabourDisplay(item), 'right')}
+        ${cell(item.other ? formatBillMoney(item.other, payload.autoRoundFigure) : '', 'right')}
         ${cell(item.amount ? formatBillMoney(item.amount, payload.autoRoundFigure) : '', 'right strong')}
       </tr>`;
     })
@@ -1290,13 +1301,14 @@ function buildWholesaleBillHtml(payload: BillPayload, transactions: BillTransact
             <thead>
               <tr>
                 <th style="width: 6%;">#</th>
-                <th style="width: 24%; text-align: left;">${escapeHtml(t(language, 'item'))}</th>
-                <th style="width: 13%;">${escapeHtml(t(language, 'weight'))}</th>
-                <th style="width: 9%;">${escapeHtml(t(language, 'touch'))}</th>
-                <th style="width: 12%;">${escapeHtml(t(language, 'fine'))}</th>
-                <th style="width: 7%;">${escapeHtml(t(language, 'pcs'))}</th>
-                <th style="width: 12%;">${escapeHtml(t(language, 'labour'))}</th>
-                <th style="width: 17%;">${escapeHtml(t(language, 'amount'))}</th>
+                <th style="width: 22%; text-align: left;">${escapeHtml(t(language, 'item'))}</th>
+                <th style="width: 12%;">${escapeHtml(t(language, 'weight'))}</th>
+                <th style="width: 8%;">${escapeHtml(t(language, 'touch'))}</th>
+                <th style="width: 11%;">${escapeHtml(t(language, 'fine'))}</th>
+                <th style="width: 6%;">${escapeHtml(t(language, 'pcs'))}</th>
+                <th style="width: 11%;">${escapeHtml(t(language, 'labour'))}</th>
+                <th style="width: 10%;">Other</th>
+                <th style="width: 14%;">${escapeHtml(t(language, 'amount'))}</th>
               </tr>
             </thead>
             <tbody>${buildWholesaleRows(payload)}</tbody>

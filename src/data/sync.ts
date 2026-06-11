@@ -210,6 +210,7 @@ export function sanitizeRow(table: string, row: any): Record<string, any> {
       r.rate = text(row.rate);
       r.labour_type = oneOf(text(row.labour_type), LABOUR_TYPES, 'labour_type');
       r.labour = text(row.labour);
+      r.other = text(row.other);
       r.amount = text(row.amount);
       r.supplier_id = text(row.supplier_id);
       r.updated_at = text(row.updated_at);
