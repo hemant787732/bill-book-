@@ -3,8 +3,8 @@ export const SHOP = {
   initials: 'SS',
   tagline: 'Wholesaler in All Kinds of Silver Ornaments',
   owners: [
+    { name: 'Shrikunj Soni', mobile: '93282 78226' },
     { name: 'Sahil Soni', mobile: '96873 90721' },
-    { name: 'Shrikuni Soni', mobile: '93282 78226' },
   ],
   addressLines: [
     'Ganesh Genesis Near Jagatpur Cross Rd, Gota, Ahmedabad.',
