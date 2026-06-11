@@ -1,6 +1,6 @@
 import { LocalDatabase } from './dbTypes';
 import { supabase } from './supabase';
-import { TABLES, sanitizeRow, upsertRows } from './sync';
+import { TABLES, sanitizeRow, upsertRows, syncPendingChanges } from './sync';
 
 type SyncCallback = () => void;
 
@@ -17,6 +17,8 @@ interface RealtimePayload {
 const activeChannels: any[] = [];
 let onChangeCallback: SyncCallback | null = null;
 let refreshTimeout: ReturnType<typeof setTimeout> | null = null;
+let reconcileTimeout: ReturnType<typeof setTimeout> | null = null;
+let reconcileDb: LocalDatabase | null = null;
 let isRunning = false;
 
 function debouncedRefresh() {
@@ -24,7 +26,20 @@ function debouncedRefresh() {
   refreshTimeout = setTimeout(() => {
     refreshTimeout = null;
     if (onChangeCallback) onChangeCallback();
-  }, 500);
+  }, 150);
+}
+
+// When the websocket (re)connects, run one full sync to catch any rows that
+// changed while we were offline — realtime does not replay missed events.
+// Debounced because all channels report SUBSCRIBED within a few ms of connect.
+function scheduleReconcile() {
+  if (reconcileTimeout) return;
+  reconcileTimeout = setTimeout(() => {
+    reconcileTimeout = null;
+    const db = reconcileDb;
+    if (!db) return;
+    void syncPendingChanges(db).then(() => debouncedRefresh());
+  }, 400);
 }
 
 export function setRealtimeSyncCallback(callback: SyncCallback) {
@@ -82,6 +97,7 @@ async function handleDelete(db: LocalDatabase, table: string, payload: RealtimeP
 export function startRealtimeSync(db: LocalDatabase) {
   if (!supabase || isRunning) return;
   isRunning = true;
+  reconcileDb = db;
 
   for (const table of TABLES) {
     const channel = supabase.channel(`public:${table}`);
@@ -106,6 +122,9 @@ export function startRealtimeSync(db: LocalDatabase) {
 
     channel.subscribe((status: string) => {
       console.log(`Realtime channel public:${table} status:`, status);
+      if (status === 'SUBSCRIBED') {
+        scheduleReconcile();
+      }
     });
     activeChannels.push(channel);
   }
@@ -116,6 +135,10 @@ export function stopRealtimeSync() {
   if (refreshTimeout) {
     clearTimeout(refreshTimeout);
     refreshTimeout = null;
+  }
+  if (reconcileTimeout) {
+    clearTimeout(reconcileTimeout);
+    reconcileTimeout = null;
   }
   for (const channel of activeChannels) {
     supabase?.removeChannel(channel);

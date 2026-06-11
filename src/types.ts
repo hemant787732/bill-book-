@@ -21,6 +21,10 @@ export interface BillItemDraft {
   packetLess: string;
   fine: string;
   amount: string;
+  // Supplier the metal for this line came from (per-item). Drives auto-posting
+  // of a supplier payable when the bill is saved.
+  supplierId?: string;
+  supplierName?: string;
 }
 
 export interface BillItemRecord extends BillItemDraft {
@@ -139,6 +143,11 @@ export interface MarketRun {
   goldWeight: number;
   silverWeight: number;
   note: string;
+  // Physically counted remaining stock at day-end (gm) + whether the day is
+  // reconciled/closed.
+  actualSilverRemaining: number;
+  actualGoldRemaining: number;
+  closed: boolean;
   createdAt: string;
   updatedAt: string;
   syncStatus: SyncStatus;
@@ -148,8 +157,12 @@ export interface MarketStockSummary extends MarketRun {
   billCount: number;
   goldSold: number;
   silverSold: number;
+  // Expected remaining = taken − sold.
   goldRemaining: number;
   silverRemaining: number;
+  // Variance = expected − actual (positive = short / missing, negative = extra).
+  goldVariance: number;
+  silverVariance: number;
 }
 
 export interface Rate {
@@ -225,6 +238,50 @@ export interface PartyTransaction {
   syncStatus: SyncStatus;
 }
 
+// Links a party transaction to the specific bill(s) it settles, with the fine
+// and amount allocated to each. Drives per-bill outstanding ("balance version").
+export interface TransactionAllocation {
+  id: string;
+  transactionId: string;
+  customerId: string;
+  billId: string;
+  billNo: number;
+  fineAlloc: number;
+  amountAlloc: number;
+  createdAt: string;
+  updatedAt: string;
+  syncStatus: SyncStatus;
+}
+
+// Per-bill running balance for a party: original dues vs what's been settled
+// (bill transactions + party-transaction allocations) = outstanding.
+export interface BillBalance {
+  billId: string;
+  billNo: number;
+  billDate: string;
+  fineDue: number;
+  amountDue: number;
+  finePaid: number;
+  amountPaid: number;
+  fineOutstanding: number;
+  amountOutstanding: number;
+}
+
+// A device that has signed in. `revoked` flips when removed from another device;
+// the revoked device signs itself out on its next app-open / realtime tick.
+export interface Device {
+  id: string;
+  deviceId: string;
+  userEmail: string;
+  deviceName: string;
+  platform: string;
+  lastSeen: string;
+  revoked: boolean;
+  createdAt: string;
+  updatedAt: string;
+  syncStatus: SyncStatus;
+}
+
 export interface SupplierAccount {
   id: string;
   entryDate: string;
@@ -256,6 +313,72 @@ export interface SupplierLedgerSummary {
   transactionCount: number;
 }
 
+// A single line on a supplier purchase voucher (items bought from the supplier).
+export interface SupplierPurchaseItem {
+  id: string;
+  transactionId: string;
+  supplierId: string;
+  lineNo: number;
+  itemName: string;
+  pcs: string;
+  weight: string;
+  touch: string;
+  fine: string;
+  rate: string;
+  amount: string;
+  updatedAt: string;
+  syncStatus: SyncStatus;
+}
+
+// One row of the purchased-items stock ledger: stock bought from a supplier for
+// an item, minus stock sold (bill items linked to that supplier), = on hand.
+export interface PurchaseStockRow {
+  supplierId: string;
+  supplierName: string;
+  itemName: string;
+  pcsIn: number;
+  pcsSold: number;
+  pcsOnHand: number;
+  fineIn: number;
+  fineSold: number;
+  fineOnHand: number;
+  weightIn: number;
+  weightSold: number;
+  weightOnHand: number;
+}
+
+export interface StockItemLedgerEntry {
+  id: string;
+  date: string;
+  refNo: number;
+  accountName: string;
+  pcs: number;
+  weight: number;
+  packetLess?: number;
+  netWeight: number;
+  touch: number;
+  fine: number;
+  sourceTouch?: number;
+  sourceFine?: number;
+  rate: number;
+  amount: number;
+}
+
+export interface StockItemLedger {
+  supplierId: string;
+  supplierName: string;
+  itemName: string;
+  purchases: StockItemLedgerEntry[];
+  sales: StockItemLedgerEntry[];
+  purchasePcs: number;
+  salePcs: number;
+  pcsBalance: number;
+  purchaseFine: number;
+  saleFine: number;
+  stockFineLess: number;
+  fineBalance: number;
+}
+
 export type SupplierTransactionMode = 'cash_payment' | 'bank_payment' | 'split_payment' | 'metal_paid' | 'purchase' | 'discount';
 
 export interface SupplierTransaction {
@@ -272,9 +395,38 @@ export interface SupplierTransaction {
   bankAmount: number;
   discountAmount: number;
   note: string;
+  // 'manual' for hand-entered transactions. Older installs may still contain
+  // legacy 'bill' rows, but sale bills now reduce stock through bill_items.
+  sourceType?: string;
+  sourceBillId?: string;
   createdAt: string;
   updatedAt: string;
   syncStatus: SyncStatus;
+}
+
+// One concluded bill in the comparison ledger: supplier stock reduced vs. what
+// we credited to the party, and the margin / labour we earned on it.
+export interface FlowLedgerRow {
+  billId: string;
+  billNo: number;
+  date: string;
+  partyName: string;
+  supplierNames: string;
+  fineLinked: number;   // supplier stock reduced by linked bill items
+  fineSold: number;     // fine credited / billed to the party
+  fineMargin: number;   // fineSold - fineLinked
+  labourEarned: number; // labour charged on the bill (our earning)
+  amount: number;       // bill net total
+}
+
+export interface FlowLedgerSummary {
+  totalFineLinked: number;
+  totalFineSold: number;
+  totalFineMargin: number;
+  totalLabourEarned: number;
+  totalAmount: number;
+  billCount: number;
+  rows: FlowLedgerRow[];
 }
 
 export interface CashBankEntry {

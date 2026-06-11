@@ -1,9 +1,28 @@
 import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import type { MetalType, SupplierAccount, SupplierLedgerSummary, SupplierTransaction, SupplierTransactionMode } from '../types';
+import type {
+  MetalType,
+  PurchaseStockRow,
+  StockItemLedger,
+  StockItemLedgerEntry,
+  SupplierAccount,
+  SupplierLedgerSummary,
+  SupplierTransaction,
+  SupplierTransactionMode,
+} from '../types';
 import { formatCalcValue } from '../utils/calculations';
 import { formatDateForBill, formatMoney, localIsoDate, parseAmount } from '../utils/format';
+
+export type PurchaseItemInput = {
+  itemName: string;
+  pcs: string;
+  weight: string;
+  touch: string;
+  fine: string;
+  rate: string;
+  amount: string;
+};
 type SupplierManualDraft = {
   id: string;
   entryDate: string;
@@ -30,6 +49,7 @@ export type SupplierTransactionFormInput = {
   mode: SupplierTransactionMode;
   note: string;
   transactionDate: string;
+  items?: PurchaseItemInput[];
 };
 
 type SupplierListProps = {
@@ -37,13 +57,16 @@ type SupplierListProps = {
   onAddSupplier: () => void;
   onBack: () => void;
   onOpenSupplier: (supplierId: string) => void;
+  onOpenStock?: () => void;
   suppliers: SupplierAccount[];
 };
 
 type SupplierDetailProps = {
   ledger: SupplierLedgerSummary | null;
   onBack: () => void;
+  onOpenPurchase?: () => void;
   onOpenTransact: () => void;
+  onShareVoucher?: (transaction: SupplierTransaction) => void;
   supplier: SupplierAccount;
   transactions: SupplierTransaction[];
 };
@@ -52,6 +75,7 @@ type SupplierTransactProps = {
   ledger: SupplierLedgerSummary | null;
   onBack: () => void;
   onSaveSupplierTransaction: (input: SupplierTransactionFormInput) => Promise<SupplierTransaction | false>;
+  onShareVoucher?: (transaction: SupplierTransaction) => void;
   supplier: SupplierAccount;
   transactions: SupplierTransaction[];
 };
@@ -216,7 +240,7 @@ function supplierMatchesSearch(supplier: SupplierAccount, ledger: SupplierLedger
   );
 }
 
-export function SupplierListScreen({ ledgers, onAddSupplier, onBack, onOpenSupplier, suppliers }: SupplierListProps) {
+export function SupplierListScreen({ ledgers, onAddSupplier, onBack, onOpenSupplier, onOpenStock, suppliers }: SupplierListProps) {
   const [search, setSearch] = useState('');
   const filteredSuppliers = useMemo(
     () => suppliers.filter((supplier) => supplierMatchesSearch(supplier, ledgers.get(supplier.id), search)),
@@ -235,6 +259,11 @@ export function SupplierListScreen({ ledgers, onAddSupplier, onBack, onOpenSuppl
       <Pressable onPress={onAddSupplier} style={styles.primaryButton}>
         <Text style={styles.primaryButtonText}>Add supplier</Text>
       </Pressable>
+      {onOpenStock ? (
+        <Pressable onPress={onOpenStock} style={[styles.primaryButton, { backgroundColor: '#1a3c5e' }]}>
+          <Text style={styles.primaryButtonText}>Purchased items stock</Text>
+        </Pressable>
+      ) : null}
       <SearchBox placeholder="Search supplier, mobile, address" value={search} onChangeText={setSearch} />
       <View style={styles.list}>
         {filteredSuppliers.length ? (
@@ -329,7 +358,7 @@ export function AddSupplierScreen({ onBack, onSaveSupplier }: { onBack: () => vo
   );
 }
 
-export function SupplierDetailScreen({ ledger, onBack, onOpenTransact, supplier, transactions }: SupplierDetailProps) {
+export function SupplierDetailScreen({ ledger, onBack, onOpenPurchase, onOpenTransact, onShareVoucher, supplier, transactions }: SupplierDetailProps) {
   const [search, setSearch] = useState('');
   const filteredTransactions = transactions.filter((transaction) =>
     includesSearch(
@@ -365,9 +394,14 @@ export function SupplierDetailScreen({ ledger, onBack, onOpenTransact, supplier,
         <SummaryTile label="Amount payable" value={formatMoney(ledger?.amountPayable ?? supplier.openingAmountPayable)} />
         <SummaryTile label="Paid" value={formatMoney(ledger?.amountPaid ?? 0)} />
       </View>
-      <Pressable onPress={onOpenTransact} style={styles.primaryButton}>
-        <Text style={styles.primaryButtonText}>Transact / pay supplier</Text>
-      </Pressable>
+      <View style={styles.detailActionRow}>
+        <Pressable onPress={onOpenPurchase ?? onOpenTransact} style={[styles.primaryButton, styles.detailActionButton]}>
+          <Text style={styles.primaryButtonText}>Purchase entry</Text>
+        </Pressable>
+        <Pressable onPress={onOpenTransact} style={[styles.secondaryButton, styles.detailActionButton]}>
+          <Text style={styles.secondaryButtonText}>Payment / adjustment</Text>
+        </Pressable>
+      </View>
       <SearchBox placeholder="Search voucher, date, amount" value={search} onChangeText={setSearch} />
       <View style={styles.list}>
         {filteredTransactions.length ? (
@@ -382,6 +416,13 @@ export function SupplierDetailScreen({ ledger, onBack, onOpenTransact, supplier,
                   {transaction.discountAmount > 0 ? `Dis ${formatMoney(transaction.discountAmount)} | ` : ''}
                   {transaction.note || 'No narration'}
                 </Text>
+                {onShareVoucher ? (
+                  <Pressable onPress={() => onShareVoucher(transaction)} style={{ alignSelf: 'flex-start', marginTop: 8, paddingVertical: 6, paddingHorizontal: 14, borderRadius: 6, borderWidth: 1, borderColor: '#007a66' }}>
+                    <Text style={{ color: '#007a66', fontFamily: 'serif', fontWeight: '900', fontSize: 13 }}>
+                      {transaction.mode === 'purchase' ? 'Purchase voucher PDF' : 'Payment voucher PDF'}
+                    </Text>
+                  </Pressable>
+                ) : null}
               </View>
             </View>
           ))
@@ -393,9 +434,9 @@ export function SupplierDetailScreen({ ledger, onBack, onOpenTransact, supplier,
   );
 }
 
-export function SupplierTransactScreen({ ledger, onBack, onSaveSupplierTransaction, supplier, transactions }: SupplierTransactProps) {
+export function SupplierTransactScreen({ ledger, onBack, onSaveSupplierTransaction, onShareVoucher, supplier, transactions }: SupplierTransactProps) {
   const [transactionDate, setTransactionDate] = useState(formatDateForBill(localIsoDate()));
-  const [mode, setMode] = useState<SupplierTransactionMode>('purchase');
+  const [mode, setMode] = useState<SupplierTransactionMode>('cash_payment');
   const [material, setMaterial] = useState<MetalType>('silver');
   const [fineWeight, setFineWeight] = useState('');
   const [bookedRate, setBookedRate] = useState('');
@@ -404,7 +445,10 @@ export function SupplierTransactScreen({ ledger, onBack, onSaveSupplierTransacti
   const [discountAmount, setDiscountAmount] = useState('');
   const [note, setNote] = useState('');
   const [isSavingTransaction, setIsSavingTransaction] = useState(false);
-  const metalValue = useMemo(() => fineValueFromBookedRate(material, fineWeight, bookedRate), [bookedRate, fineWeight, material]);
+  const metalValue = useMemo(
+    () => fineValueFromBookedRate(material, fineWeight, bookedRate),
+    [bookedRate, fineWeight, material],
+  );
 
   async function submitTransaction() {
     setIsSavingTransaction(true);
@@ -427,6 +471,7 @@ export function SupplierTransactScreen({ ledger, onBack, onSaveSupplierTransacti
         setBankAmount('');
         setDiscountAmount('');
         setNote('');
+        if (onShareVoucher) onShareVoucher(saved);
       }
     } finally {
       setIsSavingTransaction(false);
@@ -445,28 +490,22 @@ export function SupplierTransactScreen({ ledger, onBack, onSaveSupplierTransacti
         <Text style={styles.fieldLabel}>Entry type</Text>
         <Segment
           options={[
-            { label: 'Purchase', value: 'purchase' },
             { label: 'Cash paid', value: 'cash_payment' },
             { label: 'Bank paid', value: 'bank_payment' },
             { label: 'Split paid', value: 'split_payment' },
             { label: 'Metal paid', value: 'metal_paid' },
+            { label: 'Discount', value: 'discount' },
           ]}
           value={mode}
           onChange={setMode}
         />
         <View style={styles.formGrid}>
           <DateField label="Date" value={transactionDate} onChangeText={setTransactionDate} />
-          {mode === 'purchase' || mode === 'metal_paid' ? (
+          {mode === 'metal_paid' ? (
             <>
               <Text style={styles.fieldLabel}>Metal</Text>
               <MetalSelector material={material} onChange={setMaterial} />
-              <SupplierField keyboardType="decimal-pad" label={mode === 'purchase' ? 'Purchase fine (gm)' : 'Metal paid (gm)'} selectTextOnFocus value={fineWeight} onChangeText={setFineWeight} />
-            </>
-          ) : null}
-          {mode === 'purchase' ? (
-            <>
-              <SupplierField keyboardType="decimal-pad" label={`Booked rate (${metalRateLabel(material)})`} selectTextOnFocus value={bookedRate} onChangeText={setBookedRate} />
-              <SupplierField editable={false} label="Purchase amount equivalent" value={metalValue > 0 ? formatMoney(metalValue) : ''} onChangeText={() => {}} />
+              <SupplierField keyboardType="decimal-pad" label="Metal paid (gm)" selectTextOnFocus value={fineWeight} onChangeText={setFineWeight} />
             </>
           ) : null}
           {mode === 'cash_payment' || mode === 'split_payment' ? (
@@ -475,7 +514,15 @@ export function SupplierTransactScreen({ ledger, onBack, onSaveSupplierTransacti
           {mode === 'bank_payment' || mode === 'split_payment' ? (
             <SupplierField keyboardType="decimal-pad" label="Bank paid" selectTextOnFocus value={bankAmount} onChangeText={setBankAmount} />
           ) : null}
-          <SupplierField keyboardType="decimal-pad" label="Discount (optional)" selectTextOnFocus value={discountAmount} onChangeText={setDiscountAmount} />
+          {mode === 'metal_paid' ? (
+            <>
+              <SupplierField keyboardType="decimal-pad" label={`Booked rate (${metalRateLabel(material)})`} selectTextOnFocus value={bookedRate} onChangeText={setBookedRate} />
+              <SupplierField editable={false} label="Metal value" value={metalValue > 0 ? formatMoney(metalValue) : ''} onChangeText={() => {}} />
+            </>
+          ) : null}
+          {mode === 'discount' ? (
+            <SupplierField keyboardType="decimal-pad" label="Discount" selectTextOnFocus value={discountAmount} onChangeText={setDiscountAmount} />
+          ) : null}
           <SupplierField label="Narration" multiline value={note} onChangeText={setNote} />
         </View>
         <Pressable disabled={isSavingTransaction} onPress={submitTransaction} style={[styles.primaryButton, isSavingTransaction && styles.disabledButton]}>
@@ -489,9 +536,177 @@ export function SupplierTransactScreen({ ledger, onBack, onSaveSupplierTransacti
             <View style={styles.cardMain}>
               <Text style={styles.transactionTitle}>Voucher #{transaction.voucherNo} - {formatDateForBill(transaction.transactionDate)}</Text>
               <Text style={styles.cardMeta}>{supplierTransactionModeLabel(transaction.mode)}</Text>
+              {onShareVoucher ? (
+                <Pressable onPress={() => onShareVoucher(transaction)} style={{ alignSelf: 'flex-start', marginTop: 8, paddingVertical: 6, paddingHorizontal: 14, borderRadius: 6, borderWidth: 1, borderColor: '#007a66' }}>
+                  <Text style={{ color: '#007a66', fontFamily: 'serif', fontWeight: '900', fontSize: 13 }}>
+                    {transaction.mode === 'purchase' ? 'Purchase voucher PDF' : 'Payment voucher PDF'}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
         ))}
+      </View>
+    </ScrollView>
+  );
+}
+
+export function PurchasedStockScreen({
+  onBack,
+  onOpenItem,
+  rows,
+}: {
+  onBack: () => void;
+  onOpenItem?: (row: PurchaseStockRow) => void;
+  rows: PurchaseStockRow[];
+}) {
+  const [search, setSearch] = useState('');
+  const filtered = rows.filter((row) => includesSearch([row.supplierName, row.itemName], search));
+  const totalOnHand = filtered.reduce((sum, row) => sum + row.pcsOnHand, 0);
+  const totalFineOnHand = filtered.reduce((sum, row) => sum + row.fineOnHand, 0);
+
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <SupplierHeader title="Purchased items stock" onBack={onBack} />
+      <View style={styles.summaryStrip}>
+        <SummaryTile label="Pcs on hand" value={`${totalOnHand}`} />
+        <SummaryTile label="Fine on hand" value={`${formatCalcValue(totalFineOnHand, 3) || '0'} gm`} />
+      </View>
+      <SearchBox placeholder="Search supplier or item" value={search} onChangeText={setSearch} />
+      <View style={styles.list}>
+        {filtered.length ? (
+          filtered.map((row) => (
+            <Pressable key={`${row.supplierId}-${row.itemName}`} onPress={() => onOpenItem?.(row)} style={styles.transactionRow}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <View style={styles.cardMain}>
+                  <Text style={styles.transactionTitle}>{row.itemName}</Text>
+                  <Text style={styles.cardMeta}>{row.supplierName}</Text>
+                  <Text style={styles.cardMeta}>
+                    Add {row.pcsIn} pcs / {formatCalcValue(row.fineIn, 3) || '0'} gm · Sold {row.pcsSold} pcs / {formatCalcValue(row.fineSold, 3) || '0'} gm
+                  </Text>
+                </View>
+                <View style={styles.cardAmountBlock}>
+                  <Text style={[styles.cardAmount, { color: row.pcsOnHand < 0 ? '#c0392b' : '#1a3c5e' }]}>{row.pcsOnHand} pcs</Text>
+                  <Text style={[styles.cardFine, { color: row.fineOnHand < -0.0005 ? '#c0392b' : '#75665f' }]}>{formatCalcValue(row.fineOnHand, 3) || '0'} gm</Text>
+                  <Text style={styles.cardFine}>on hand</Text>
+                </View>
+              </View>
+            </Pressable>
+          ))
+        ) : (
+          <Text style={styles.emptyText}>{rows.length ? 'Search me item nahi mila.' : 'Abhi koi purchase item nahi hai. Supplier detail me Purchase entry karo.'}</Text>
+        )}
+      </View>
+    </ScrollView>
+  );
+}
+
+export function StockItemLedgerScreen({
+  ledger,
+  onBack,
+}: {
+  ledger: StockItemLedger | null;
+  onBack: () => void;
+}) {
+  if (!ledger) {
+    return (
+      <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+        <SupplierHeader title="Item ledger" onBack={onBack} />
+        <Text style={styles.emptyText}>Item ledger load nahi hua.</Text>
+      </ScrollView>
+    );
+  }
+
+  let runningFine = 0;
+  const lines = [
+    ...ledger.purchases.map((entry) => ({
+      credit: 0,
+      date: entry.date,
+      debit: entry.fine,
+      entry,
+      particular: `To ${entry.accountName}`,
+      remark: `Purchase @ ${formatCalcValue(entry.touch, 2) || '0'} touch`,
+      type: 'PUR',
+      voucher: `PV-${entry.refNo || '-'}`,
+    })),
+    ...ledger.sales.map((entry) => {
+      const stockLessFine = entry.sourceFine ?? entry.fine;
+      const saleFine = entry.fine;
+      const margin = saleFine - stockLessFine;
+      return {
+        credit: stockLessFine,
+        date: entry.date,
+        debit: 0,
+        entry,
+        particular: `By ${entry.accountName}`,
+        remark: `Sale ${formatCalcValue(entry.touch, 2) || '0'}t | Stock ${formatCalcValue(entry.sourceTouch ?? entry.touch, 2) || '0'}t | Mgn ${formatCalcValue(margin, 3) || '0'} gm`,
+        type: 'SALE',
+        voucher: `B-${entry.refNo || '-'}`,
+      };
+    }),
+  ]
+    .sort((a, b) => a.date.localeCompare(b.date) || a.type.localeCompare(b.type) || a.voucher.localeCompare(b.voucher))
+    .map((line) => {
+      runningFine += line.debit - line.credit;
+      return { ...line, balance: Number(runningFine.toFixed(3)) };
+    });
+
+  const fineMargin = Number((ledger.saleFine - ledger.stockFineLess).toFixed(3));
+
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <SupplierHeader title={ledger.itemName || 'Item ledger'} onBack={onBack} />
+      <Text style={styles.sectionTitle}>{ledger.supplierName}</Text>
+      <View style={styles.summaryStrip}>
+        <SummaryTile label="Pur fine" value={`${formatCalcValue(ledger.purchaseFine, 3) || '0'} gm`} />
+        <SummaryTile label="Stock less" value={`${formatCalcValue(ledger.stockFineLess, 3) || '0'} gm`} />
+        <SummaryTile label="Fine margin" value={`${formatCalcValue(fineMargin, 3) || '0'} gm`} />
+        <SummaryTile label="Balance" value={`${formatCalcValue(ledger.fineBalance, 3) || '0'} gm`} />
+      </View>
+      <View style={styles.summaryStrip}>
+        <SummaryTile label="Pur pcs" value={`${ledger.purchasePcs}`} />
+        <SummaryTile label="Sale pcs" value={`${ledger.salePcs}`} />
+        <SummaryTile label="Pcs bal" value={`${ledger.pcsBalance}`} />
+      </View>
+
+      <Text style={styles.sectionTitle}>Stock account ledger</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator>
+        <View style={styles.accountLedgerTable}>
+          <View style={[styles.accountLedgerRow, styles.accountLedgerHeader]}>
+            <Text style={[styles.accountLedgerCell, styles.colDate]}>Date</Text>
+            <Text style={[styles.accountLedgerCell, styles.colParticular]}>Particular</Text>
+            <Text style={[styles.accountLedgerCell, styles.colVoucher]}>Vch</Text>
+            <Text style={[styles.accountLedgerCell, styles.colSmallNum]}>Touch</Text>
+            <Text style={[styles.accountLedgerCell, styles.colSmallNum]}>Pcs</Text>
+            <Text style={[styles.accountLedgerCell, styles.colWeight]}>Net wt</Text>
+            <Text style={[styles.accountLedgerCell, styles.colFine]}>Debit/Add</Text>
+            <Text style={[styles.accountLedgerCell, styles.colFine]}>Credit/Less</Text>
+            <Text style={[styles.accountLedgerCell, styles.colFine]}>Balance</Text>
+            <Text style={[styles.accountLedgerCell, styles.colRemark]}>Narration</Text>
+          </View>
+          {lines.length ? (
+            lines.map((line) => (
+              <View key={`${line.type}-${line.entry.id}`} style={styles.accountLedgerRow}>
+                <Text style={[styles.accountLedgerCell, styles.colDate]}>{formatDateForBill(line.date)}</Text>
+                <Text style={[styles.accountLedgerCell, styles.colParticular]} numberOfLines={2}>{line.particular}</Text>
+                <Text style={[styles.accountLedgerCell, styles.colVoucher]}>{line.voucher}</Text>
+                <Text style={[styles.accountLedgerCell, styles.colSmallNum]}>{formatCalcValue(line.entry.touch, 2) || '0'}</Text>
+                <Text style={[styles.accountLedgerCell, styles.colSmallNum]}>{line.entry.pcs || 0}</Text>
+                <Text style={[styles.accountLedgerCell, styles.colWeight]}>{formatCalcValue(line.entry.netWeight || line.entry.weight, 3) || '0'}</Text>
+                <Text style={[styles.accountLedgerCell, styles.colFine]}>{line.debit > 0 ? `${formatCalcValue(line.debit, 3)} gm` : '-'}</Text>
+                <Text style={[styles.accountLedgerCell, styles.colFine]}>{line.credit > 0 ? `${formatCalcValue(line.credit, 3)} gm` : '-'}</Text>
+                <Text style={[styles.accountLedgerCell, styles.colFine, line.balance < -0.0005 && styles.negativeText]}>{formatCalcValue(line.balance, 3) || '0'} gm</Text>
+                <Text style={[styles.accountLedgerCell, styles.colRemark]} numberOfLines={2}>{line.remark}</Text>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.emptyText}>Is item ka ledger empty hai.</Text>
+          )}
+        </View>
+      </ScrollView>
+      <View style={styles.ledgerNoteBox}>
+        <Text style={styles.cardMeta}>Debit/Add = supplier se purchase fine. Credit/Less = sale bill ke against supplier stock se ghata hua fine.</Text>
+        <Text style={styles.cardMeta}>Sale touch aur stock touch alag ho to difference Fine margin me dikhta hai.</Text>
       </View>
     </ScrollView>
   );
@@ -547,12 +762,73 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '900',
   },
+  accountLedgerCell: {
+    borderColor: '#d9c7b6',
+    borderRightWidth: 1,
+    color: '#251716',
+    fontFamily: 'serif',
+    fontSize: 12,
+    fontWeight: '800',
+    minHeight: 42,
+    paddingHorizontal: 6,
+    paddingVertical: 8,
+    textAlignVertical: 'center',
+  },
+  accountLedgerHeader: {
+    backgroundColor: '#f0e5d8',
+  },
+  accountLedgerRow: {
+    borderBottomColor: '#d9c7b6',
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+  },
+  accountLedgerTable: {
+    backgroundColor: '#fffdf9',
+    borderColor: '#d9c7b6',
+    borderLeftWidth: 1,
+    borderTopWidth: 1,
+    marginBottom: 12,
+    minWidth: 930,
+  },
+  colDate: {
+    width: 78,
+  },
+  colFine: {
+    textAlign: 'right',
+    width: 92,
+  },
+  colParticular: {
+    width: 150,
+  },
+  colRemark: {
+    width: 190,
+  },
+  colSmallNum: {
+    textAlign: 'right',
+    width: 58,
+  },
+  colVoucher: {
+    width: 72,
+  },
+  colWeight: {
+    textAlign: 'right',
+    width: 76,
+  },
   disabledButton: {
     opacity: 0.55,
   },
   disabledInput: {
     backgroundColor: '#f0e5d8',
     color: '#766b64',
+  },
+  detailActionButton: {
+    flex: 1,
+    minWidth: 150,
+  },
+  detailActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
   },
   emptyText: {
     color: '#7f716b',
@@ -580,21 +856,21 @@ const styles = StyleSheet.create({
   hero: {
     backgroundColor: '#fff',
     borderColor: '#eee',
-    borderRadius: 8,
+    borderRadius: 6,
     borderWidth: 1,
-    gap: 6,
-    padding: 14,
+    gap: 4,
+    padding: 8,
   },
   heroText: {
     color: '#666',
     fontFamily: 'serif',
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '700',
   },
   heroTitle: {
     color: '#263238',
     fontFamily: 'serif',
-    fontSize: 20,
+    fontSize: 15,
     fontWeight: '900',
   },
   iconBox: {
@@ -627,9 +903,20 @@ const styles = StyleSheet.create({
   list: {
     gap: 10,
   },
+  ledgerNoteBox: {
+    backgroundColor: '#fffaf2',
+    borderColor: '#ead8bd',
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 4,
+    padding: 10,
+  },
   multilineInput: {
     minHeight: 76,
     textAlignVertical: 'top',
+  },
+  negativeText: {
+    color: '#c0392b',
   },
   page: {
     backgroundColor: '#fff',
@@ -697,6 +984,22 @@ const styles = StyleSheet.create({
     color: '#251716',
     fontFamily: 'serif',
     fontSize: 18,
+    fontWeight: '900',
+  },
+  secondaryButton: {
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderColor: '#007a66',
+    borderRadius: 8,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 50,
+    paddingHorizontal: 18,
+  },
+  secondaryButtonText: {
+    color: '#007a66',
+    fontFamily: 'serif',
+    fontSize: 16,
     fontWeight: '900',
   },
   segmentButton: {
@@ -772,6 +1075,21 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     padding: 12,
+  },
+  purchaseItemCard: {
+    backgroundColor: '#fffdf9',
+    borderColor: '#e0d0c2',
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 8,
+    padding: 12,
+  },
+  purchaseItemRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  purchaseItemCol: {
+    flex: 1,
   },
   transactionTitle: {
     color: '#251716',

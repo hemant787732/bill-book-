@@ -1,4 +1,6 @@
 import { SHOP } from './config';
+import { LOGO_DATA_URI } from './logoAsset';
+import { SIGNATURE_DATA_URI } from './signatureAsset';
 import { t, translateNameOrItem } from './i18n';
 import type { BillItemDraft, BillPayload, BillTransaction, LabourType, Language, ReceiptType } from './types';
 import { calculateLabourCharge, calculateTotalFine, formatCalcValue, roundWeight } from './utils/calculations';
@@ -224,7 +226,35 @@ function estimateTotalRow(payload: BillPayload) {
 }
 
 function logoHtml(className = 'logo') {
-  return `<div class="${className}">${escapeHtml(SHOP.initials)}</div>`;
+  return `<div class="${className}"><img src="${LOGO_DATA_URI}" alt="${escapeHtml(SHOP.name)}" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block;" /></div>`;
+}
+
+function signatureHtml(label: string) {
+  return `<div class="signature"><img class="signature-img" src="${SIGNATURE_DATA_URI}" alt="${escapeHtml(label)}" /><div class="signature-line">${escapeHtml(label)} :</div></div>`;
+}
+
+function ownerContactsHtml(className = 'owner-strip') {
+  const owners = SHOP.owners ?? [];
+  if (!owners.length) return '';
+  return `<div class="${className}">${owners
+    .map((owner) => `<span><b>${escapeHtml(owner.name)}</b>${owner.mobile ? `: ${escapeHtml(owner.mobile)}` : ''}</span>`)
+    .join('<span class="owner-sep">|</span>')}</div>`;
+}
+
+function ownerContactCardsHtml() {
+  const owners = SHOP.owners ?? [];
+  if (!owners.length) return '';
+  return `<section class="owner-grid">${owners
+    .map(
+      (owner) => `<div class="owner-card"><span>${escapeHtml(owner.name)}</span><b>${escapeHtml(owner.mobile)}</b></div>`,
+    )
+    .join('')}</section>`;
+}
+
+function shopAddressHtml(className = 'address-block') {
+  const lines = SHOP.addressLines?.length ? SHOP.addressLines : [SHOP.address].filter(Boolean);
+  if (!lines.length) return '';
+  return `<div class="${className}">${lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('')}</div>`;
 }
 
 function receiptHasFine(receiptType: ReceiptType) {
@@ -498,12 +528,18 @@ function buildEstimateBillHtml(payload: BillPayload, transactions: BillTransacti
         .top {
           align-items: start;
           display: grid;
-          gap: 5mm;
-          grid-template-columns: 1fr 19mm 1fr;
+          gap: 3mm;
+          grid-template-columns: 1fr 34mm 1fr;
         }
         .top-right {
           padding-top: 1mm;
           text-align: right;
+        }
+        .brand-center {
+          align-items: center;
+          display: flex;
+          flex-direction: column;
+          text-align: center;
         }
         .estimate {
           color: #9b2339;
@@ -514,11 +550,75 @@ function buildEstimateBillHtml(payload: BillPayload, transactions: BillTransacti
         }
         .shop-name {
           color: #7f2334;
-          font-size: 10px;
+          font-size: 13px;
           font-weight: 900;
           line-height: 1.2;
-          margin-top: 2mm;
+          margin-top: 1mm;
           text-transform: uppercase;
+        }
+        .owner-strip {
+          color: #5b1f2b;
+          display: flex;
+          flex-wrap: wrap;
+          font-size: 8.2px;
+          font-weight: 900;
+          gap: 0.8mm;
+          line-height: 1.15;
+          margin-top: 1mm;
+        }
+        .owner-sep {
+          color: #a73a4a;
+        }
+        .shop-tagline {
+          color: #7f2334;
+          font-size: 7.6px;
+          font-weight: 900;
+          line-height: 1.15;
+          margin-top: 0.3mm;
+          text-transform: uppercase;
+        }
+        .address-block {
+          color: #5b1f2b;
+          font-size: 7.4px;
+          font-weight: 800;
+          line-height: 1.18;
+          margin-top: 0.7mm;
+          max-width: 62mm;
+        }
+        .owner-grid {
+          display: grid;
+          gap: 1.2mm;
+          grid-template-columns: 1fr 1fr;
+          margin-top: 1mm;
+        }
+        .owner-card {
+          align-items: center;
+          background: #fffaf3;
+          border-bottom: 1px solid rgba(167, 58, 74, 0.55);
+          border-top: 1px solid rgba(167, 58, 74, 0.55);
+          display: flex;
+          font-size: 7.8px;
+          font-weight: 900;
+          justify-content: space-between;
+          min-height: 3.6mm;
+          padding: 0.35mm 1.1mm;
+        }
+        .owner-card span {
+          color: #7f2334;
+        }
+        .owner-card b {
+          color: #4d1a23;
+        }
+        .address-strip {
+          background: #6c1b18;
+          color: #fff8e9;
+          display: grid;
+          font-size: 7.2px;
+          font-weight: 800;
+          gap: 0.15mm;
+          line-height: 1.08;
+          margin-top: 0.7mm;
+          padding: 0.45mm 1.2mm;
         }
         .muted {
           font-size: 10px;
@@ -536,16 +636,16 @@ function buildEstimateBillHtml(payload: BillPayload, transactions: BillTransacti
           font-family: Georgia, serif;
           font-size: 16px;
           font-weight: 900;
-          height: 15mm;
+          height: 14mm;
           justify-content: center;
           letter-spacing: 0;
-          width: 15mm;
+          width: 14mm;
         }
         .line-grid {
           display: grid;
           gap: 2mm 6mm;
           grid-template-columns: 1.1fr 1fr;
-          margin: 3mm 0 2.5mm;
+          margin: 2mm 0 2.3mm;
         }
         .line {
           border-bottom: 1.4px solid #a73a4a;
@@ -781,11 +881,25 @@ function buildEstimateBillHtml(payload: BillPayload, transactions: BillTransacti
           line-height: 1.22;
         }
         .signature {
+          align-items: flex-end;
+          display: flex;
+          flex-direction: column;
+          min-width: 40mm;
+        }
+        .signature-img {
+          display: block;
+          height: 17mm;
+          margin-bottom: -2.5mm;
+          object-fit: contain;
+          width: 38mm;
+        }
+        .signature-line {
           border-bottom: 1.4px solid #a73a4a;
           font-size: 10px;
           font-weight: 800;
-          min-width: 40mm;
           padding-bottom: 0.8mm;
+          text-align: left;
+          width: 40mm;
         }
       </style>
     </head>
@@ -794,12 +908,17 @@ function buildEstimateBillHtml(payload: BillPayload, transactions: BillTransacti
         <section class="top">
           <div>
             <div class="estimate">${escapeHtml(t(language, 'estimate'))}</div>
-            <div class="shop-name">${escapeHtml(SHOP.name)}</div>
             <div class="muted">${escapeHtml(t(language, 'billNo'))} : ${payload.billNo}</div>
           </div>
-          ${logoHtml()}
+          <div class="brand-center">
+            ${logoHtml()}
+            <div class="shop-name">${escapeHtml(SHOP.name)}</div>
+            <div class="shop-tagline">${escapeHtml(SHOP.tagline)}</div>
+          </div>
           <div class="muted top-right">${escapeHtml(t(language, 'date'))} : ${escapeHtml(formatDateForBill(payload.billDate))}</div>
         </section>
+        ${ownerContactCardsHtml()}
+        ${shopAddressHtml('address-strip')}
 
         <section class="line-grid">
           <div class="line">${escapeHtml(t(language, 'name'))} : ${escapeHtml(
@@ -868,7 +987,7 @@ function buildEstimateBillHtml(payload: BillPayload, transactions: BillTransacti
               ${escapeHtml(t(language, 'reportLine2'))}
             </div>
           </div>
-          <div class="signature">${escapeHtml(t(language, 'signature'))} :</div>
+          ${signatureHtml(t(language, 'signature'))}
         </section>
       </main>
     </body>
@@ -958,6 +1077,26 @@ function buildWholesaleBillHtml(payload: BillPayload, transactions: BillTransact
           font-size: 13px;
           font-weight: 700;
           margin: 5px 0 0;
+        }
+        .shop .owner-strip {
+          color: #fff3dd;
+          display: flex;
+          flex-wrap: wrap;
+          font-size: 12px;
+          font-weight: 900;
+          gap: 8px;
+          line-height: 17px;
+          margin-top: 6px;
+        }
+        .shop .owner-sep {
+          color: #d5a642;
+        }
+        .shop .address-block {
+          color: #f3ead6;
+          font-size: 11px;
+          font-weight: 700;
+          line-height: 16px;
+          margin-top: 5px;
         }
         .content { padding: 24px 28px; }
         .meta-grid {
@@ -1085,6 +1224,19 @@ function buildWholesaleBillHtml(payload: BillPayload, transactions: BillTransact
           max-width: 390px;
         }
         .signature {
+          align-items: center;
+          display: flex;
+          flex-direction: column;
+          width: 190px;
+        }
+        .signature-img {
+          display: block;
+          height: 70px;
+          margin-bottom: -9px;
+          object-fit: contain;
+          width: 150px;
+        }
+        .signature-line {
           border-top: 1px solid #1f2421;
           font-size: 13px;
           font-weight: 800;
@@ -1100,7 +1252,9 @@ function buildWholesaleBillHtml(payload: BillPayload, transactions: BillTransact
           ${logoHtml('logo-pro')}
           <div class="shop">
             <h1>${escapeHtml(SHOP.name)}</h1>
-            <p>${escapeHtml(SHOP.tagline)} | ${escapeHtml(SHOP.address)} | ${escapeHtml(SHOP.mobile)}</p>
+            <p>${escapeHtml(SHOP.tagline)}</p>
+            ${ownerContactsHtml()}
+            ${shopAddressHtml()}
           </div>
         </section>
 
@@ -1190,7 +1344,7 @@ function buildWholesaleBillHtml(payload: BillPayload, transactions: BillTransact
                 ${escapeHtml(t(language, 'reportLine2'))}
               </div>
             </div>
-            <div class="signature">${escapeHtml(SHOP.name)}</div>
+            ${signatureHtml(SHOP.name)}
           </section>
         </section>
       </main>
@@ -1231,13 +1385,23 @@ function buildJangadBillHtml(payload: BillPayload, transactions: BillTransaction
         .paper { background: #fffdf9; border: 1.2px solid #d5b9bd; display: flex; flex-direction: column; height: 700px; margin: 0; min-height: 700px; overflow: hidden; padding: 18px 22px 16px; width: 660px; max-width: none; }
         @media screen { body { background: #f2efe8; padding: 0; } .paper { box-shadow: 0 1px 8px rgba(0, 0, 0, 0.08); } }
         @media print { html, body { -webkit-print-color-adjust: exact; height: 700px; margin: 0; overflow: hidden; padding: 0; print-color-adjust: exact; width: 660px; } .paper { break-inside: avoid; box-shadow: none; height: 700px; margin: 0; max-width: none; min-height: 700px; } }
-        .top { align-items: start; display: grid; gap: 5mm; grid-template-columns: 1fr 19mm 1fr; }
+        .top { align-items: start; display: grid; gap: 3mm; grid-template-columns: 1fr 34mm 1fr; }
         .top-right { padding-top: 1mm; text-align: right; }
+        .brand-center { align-items: center; display: flex; flex-direction: column; text-align: center; }
         .estimate { color: #9b2339; font-size: 18px; font-weight: 900; letter-spacing: 0; line-height: 1; }
-        .shop-name { color: #7f2334; font-size: 10px; font-weight: 900; line-height: 1.2; margin-top: 2mm; text-transform: uppercase; }
+        .shop-name { color: #7f2334; font-size: 13px; font-weight: 900; line-height: 1.2; margin-top: 1mm; text-transform: uppercase; }
+        .owner-strip { color: #5b1f2b; display: flex; flex-wrap: wrap; font-size: 8.2px; font-weight: 900; gap: 0.8mm; line-height: 1.15; margin-top: 1mm; }
+        .owner-sep { color: #a73a4a; }
+        .shop-tagline { color: #7f2334; font-size: 7.6px; font-weight: 900; line-height: 1.15; margin-top: 0.3mm; text-transform: uppercase; }
+        .address-block { color: #5b1f2b; font-size: 7.4px; font-weight: 800; line-height: 1.18; margin-top: 0.7mm; max-width: 62mm; }
+        .owner-grid { display: grid; gap: 1.2mm; grid-template-columns: 1fr 1fr; margin-top: 1mm; }
+        .owner-card { align-items: center; background: #fffaf3; border-bottom: 1px solid rgba(167, 58, 74, 0.55); border-top: 1px solid rgba(167, 58, 74, 0.55); display: flex; font-size: 7.8px; font-weight: 900; justify-content: space-between; min-height: 3.6mm; padding: 0.35mm 1.1mm; }
+        .owner-card span { color: #7f2334; }
+        .owner-card b { color: #4d1a23; }
+        .address-strip { background: #6c1b18; color: #fff8e9; display: grid; font-size: 7.2px; font-weight: 800; gap: 0.15mm; line-height: 1.08; margin-top: 0.7mm; padding: 0.45mm 1.2mm; }
         .muted { font-size: 10px; font-weight: 800; line-height: 1.25; }
-        .logo { align-items: center; align-self: center; background: #fffdf9; border: 1.4px solid #a73a4a; border-radius: 999px; color: #a73a4a; display: flex; font-family: Georgia, serif; font-size: 16px; font-weight: 900; height: 15mm; justify-content: center; letter-spacing: 0; width: 15mm; }
-        .line-grid { display: grid; gap: 2mm 6mm; grid-template-columns: 1.1fr 1fr; margin: 3mm 0 2.5mm; }
+        .logo { align-items: center; align-self: center; background: #fffdf9; border: 1.4px solid #a73a4a; border-radius: 999px; color: #a73a4a; display: flex; font-family: Georgia, serif; font-size: 16px; font-weight: 900; height: 14mm; justify-content: center; letter-spacing: 0; width: 14mm; }
+        .line-grid { display: grid; gap: 2mm 6mm; grid-template-columns: 1.1fr 1fr; margin: 2mm 0 2.3mm; }
         .line { border-bottom: 1.4px solid #a73a4a; font-size: 10.5px; font-weight: 700; min-height: 5.5mm; padding: 0.8mm 1mm 0.5mm; white-space: nowrap; }
         .line-full { grid-column: 1 / -1; }
         table { border-collapse: collapse; table-layout: fixed; margin: 0 auto; width: 100%; }
@@ -1257,7 +1421,9 @@ function buildJangadBillHtml(payload: BillPayload, transactions: BillTransaction
         .footer-left { display: flex; flex-direction: column; gap: 1.4mm; width: 56%; }
         .footer-right { align-items: flex-end; display: flex; flex-direction: column; }
         .terms { font-size: 9.4px; font-weight: 900; line-height: 1.22; }
-        .signature { border-bottom: 1.4px solid #a73a4a; font-size: 10px; font-weight: 800; min-width: 40mm; padding-bottom: 0.8mm; }
+        .signature { align-items: flex-end; display: flex; flex-direction: column; min-width: 40mm; }
+        .signature-img { display: block; height: 17mm; margin-bottom: -2.5mm; object-fit: contain; width: 38mm; }
+        .signature-line { border-bottom: 1.4px solid #a73a4a; font-size: 10px; font-weight: 800; padding-bottom: 0.8mm; text-align: left; width: 40mm; }
       </style>
     </head>
     <body>
@@ -1265,12 +1431,17 @@ function buildJangadBillHtml(payload: BillPayload, transactions: BillTransaction
         <section class="top">
           <div>
             <div class="estimate">${escapeHtml(t(language, 'jangadBill'))}</div>
-            <div class="shop-name">${escapeHtml(SHOP.name)}</div>
             <div class="muted">${escapeHtml(t(language, 'billNo'))} : ${payload.billNo}</div>
           </div>
-          ${logoHtml()}
+          <div class="brand-center">
+            ${logoHtml()}
+            <div class="shop-name">${escapeHtml(SHOP.name)}</div>
+            <div class="shop-tagline">${escapeHtml(SHOP.tagline)}</div>
+          </div>
           <div class="muted top-right">${escapeHtml(t(language, 'date'))} : ${escapeHtml(formatDateForBill(payload.billDate))}</div>
         </section>
+        ${ownerContactCardsHtml()}
+        ${shopAddressHtml('address-strip')}
 
         <section class="line-grid">
           <div class="line">${escapeHtml(t(language, 'name'))} : ${escapeHtml(translateNameOrItem(payload.customer.name, language))}</div>
@@ -1295,7 +1466,7 @@ function buildJangadBillHtml(payload: BillPayload, transactions: BillTransaction
               <div class="terms">${escapeHtml(t(language, 'reportLine1'))}<br />${escapeHtml(t(language, 'reportLine2'))}</div>
             </div>
             <div class="footer-right">
-              <div class="signature">${escapeHtml(t(language, 'signature'))} :</div>
+              ${signatureHtml(t(language, 'signature'))}
             </div>
           </div>
           ${payload.note ? `<div class="note-text">${escapeHtml(payload.note)}</div>` : ''}

@@ -10,10 +10,18 @@ export function calculateNetWeight(weight: string, packetLess: string): number {
   return Math.max(0, parseAmount(weight) - parseAmount(packetLess));
 }
 
+// A blank/whitespace touch is treated as 100% purity. An explicitly entered 0
+// stays 0 — only an empty value defaults.
+export function resolveTouch(touch: string | number | undefined | null): number {
+  if (touch === undefined || touch === null) return 100;
+  if (typeof touch === 'string' && touch.trim() === '') return 100;
+  return parseAmount(touch);
+}
+
 export function calculateTotalFine(items: any[]): number {
   return items.reduce((sum, item) => {
     const w = typeof item.weight === 'string' ? parseAmount(item.weight) : (item.weight || 0);
-    const t = typeof item.touch === 'string' ? parseAmount(item.touch) : (item.touch || 0);
+    const t = resolveTouch(item.touch);
     const p = typeof item.packetLess === 'string' ? parseAmount(item.packetLess) : (item.packetLess || 0);
     const netWeight = Math.max(0, w - p);
     return sum + roundWeight((netWeight * t) / 100);
@@ -21,7 +29,7 @@ export function calculateTotalFine(items: any[]): number {
 }
 
 export function calculateReceivedFine(weight: string | number, touch: string | number): number {
-  return roundWeight((parseAmount(weight) * parseAmount(touch)) / 100);
+  return roundWeight((parseAmount(weight) * resolveTouch(touch)) / 100);
 }
 
 export function calculateLabourCharge(item: BillItemDraft): number {
@@ -83,7 +91,7 @@ export function autoCalculateItem(item: BillItemDraft, rates: MetalRates): BillI
   if (weight > 0) weight = roundWeight(weight);
   if (packetLess > 0) packetLess = roundWeight(packetLess);
   const netWeight = Math.max(0, weight - packetLess);
-  const touch = parseAmount(item.touch);
+  const touch = resolveTouch(item.touch);
   const fine = roundWeight((netWeight * touch) / 100);
   
   const ratePerGram = item.rate ? parseAmount(item.rate) / 1000 : getMetalRatePerGram(item.material, rates);

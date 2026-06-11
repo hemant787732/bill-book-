@@ -17,6 +17,8 @@ import type {
   LedgerMode,
   LabourType,
   MarketRun,
+  FlowLedgerRow,
+  FlowLedgerSummary,
   MarketStockSummary,
   MetalType,
   OfficeEntryStatus,
@@ -30,14 +32,22 @@ import type {
   ReminderStatus,
   SupplierAccount,
   SupplierLedgerSummary,
+  SupplierPurchaseItem,
   SupplierTransaction,
   SupplierTransactionMode,
+  PurchaseStockRow,
+  StockItemLedger,
+  StockItemLedgerEntry,
+  TransactionAllocation,
+  BillBalance,
+  Device,
   SyncStatus,
 } from '../types';
-import { calculateNetWeight, calculateSubtotal, calculateTotalFine, roundFineToHalfGram } from '../utils/calculations';
+import { calculateLabourCharge, calculateNetWeight, calculateSubtotal, calculateTotalFine, roundFineToHalfGram } from '../utils/calculations';
 import { createId, localIsoDate, nowIso, parseAmount } from '../utils/format';
+import { scheduleImmediateUpload } from './sync';
 
-const DATABASE_VERSION = 19;
+const DATABASE_VERSION = 24;
 
 type RateRow = {
   id: string;
@@ -90,6 +100,22 @@ type MarketRunRow = {
   gold_weight: number;
   silver_weight: number;
   note: string;
+  actual_silver_remaining: number;
+  actual_gold_remaining: number;
+  closed: number;
+  created_at: string;
+  updated_at: string;
+  sync_status: SyncStatus;
+};
+
+type DeviceRow = {
+  id: string;
+  device_id: string;
+  user_email: string;
+  device_name: string;
+  platform: string;
+  last_seen: string;
+  revoked: number;
   created_at: string;
   updated_at: string;
   sync_status: SyncStatus;
@@ -146,6 +172,7 @@ type BillItemRow = {
   labour_type: LabourType;
   labour: string;
   amount: string;
+  supplier_id: string;
   updated_at: string;
   sync_status: SyncStatus;
 };
@@ -217,7 +244,38 @@ type SupplierTransactionRow = {
   bank_amount: number;
   discount_amount: number;
   note: string;
+  source_type: string;
+  source_bill_id: string;
   created_at: string;
+  updated_at: string;
+  sync_status: SyncStatus;
+};
+
+type TransactionAllocationRow = {
+  id: string;
+  transaction_id: string;
+  customer_id: string;
+  bill_id: string;
+  bill_no: number;
+  fine_alloc: number;
+  amount_alloc: number;
+  created_at: string;
+  updated_at: string;
+  sync_status: SyncStatus;
+};
+
+type SupplierPurchaseItemRow = {
+  id: string;
+  transaction_id: string;
+  supplier_id: string;
+  line_no: number;
+  item_name: string;
+  pcs: string;
+  weight: string;
+  touch: string;
+  fine: string;
+  rate: string;
+  amount: string;
   updated_at: string;
   sync_status: SyncStatus;
 };
@@ -318,6 +376,24 @@ function mapMarketRun(row: MarketRunRow): MarketRun {
     goldWeight: Number(row.gold_weight ?? 0),
     silverWeight: Number(row.silver_weight ?? 0),
     note: row.note ?? '',
+    actualSilverRemaining: Number(row.actual_silver_remaining ?? 0),
+    actualGoldRemaining: Number(row.actual_gold_remaining ?? 0),
+    closed: Number(row.closed ?? 0) === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    syncStatus: row.sync_status,
+  };
+}
+
+function mapDevice(row: DeviceRow): Device {
+  return {
+    id: row.id,
+    deviceId: row.device_id ?? '',
+    userEmail: row.user_email ?? '',
+    deviceName: row.device_name ?? '',
+    platform: row.platform ?? '',
+    lastSeen: row.last_seen ?? '',
+    revoked: Number(row.revoked ?? 0) === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     syncStatus: row.sync_status,
@@ -378,6 +454,7 @@ function mapBillItem(row: BillItemRow): BillItemRecord {
     labourType: row.labour_type ?? 'gw',
     labour: row.labour,
     amount: row.amount,
+    supplierId: row.supplier_id ?? '',
     updatedAt: row.updated_at,
     syncStatus: row.sync_status,
   };
@@ -457,7 +534,42 @@ function mapSupplierTransaction(row: SupplierTransactionRow): SupplierTransactio
     bankAmount: Number(row.bank_amount ?? 0),
     discountAmount: Number(row.discount_amount ?? 0),
     note: row.note ?? '',
+    sourceType: row.source_type ?? 'manual',
+    sourceBillId: row.source_bill_id ?? '',
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    syncStatus: row.sync_status,
+  };
+}
+
+function mapTransactionAllocation(row: TransactionAllocationRow): TransactionAllocation {
+  return {
+    id: row.id,
+    transactionId: row.transaction_id,
+    customerId: row.customer_id ?? '',
+    billId: row.bill_id ?? '',
+    billNo: Number(row.bill_no ?? 0),
+    fineAlloc: Number(row.fine_alloc ?? 0),
+    amountAlloc: Number(row.amount_alloc ?? 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    syncStatus: row.sync_status,
+  };
+}
+
+function mapSupplierPurchaseItem(row: SupplierPurchaseItemRow): SupplierPurchaseItem {
+  return {
+    id: row.id,
+    transactionId: row.transaction_id,
+    supplierId: row.supplier_id ?? '',
+    lineNo: Number(row.line_no ?? 0),
+    itemName: row.item_name ?? '',
+    pcs: row.pcs ?? '',
+    weight: row.weight ?? '',
+    touch: row.touch ?? '',
+    fine: row.fine ?? '',
+    rate: row.rate ?? '',
+    amount: row.amount ?? '',
     updatedAt: row.updated_at,
     syncStatus: row.sync_status,
   };
@@ -555,6 +667,7 @@ function inputItemBusinessSignature(item: BillItemDraft, index: number) {
     labourType: textValue(item.labourType ?? 'gw'),
     labour: numberValue(item.labour),
     amount: numberValue(item.amount),
+    supplierId: textValue(item.supplierId ?? ''),
   };
 }
 
@@ -572,6 +685,7 @@ function rowItemBusinessSignature(item: BillItemRow) {
     labourType: textValue(item.labour_type ?? 'gw'),
     labour: numberValue(item.labour),
     amount: numberValue(item.amount),
+    supplierId: textValue(item.supplier_id ?? ''),
   };
 }
 
@@ -848,6 +962,9 @@ export async function migrateDbIfNeeded(db: LocalDatabase) {
         gold_weight REAL NOT NULL DEFAULT 0,
         silver_weight REAL NOT NULL DEFAULT 0,
         note TEXT NOT NULL DEFAULT '',
+        actual_silver_remaining REAL NOT NULL DEFAULT 0,
+        actual_gold_remaining REAL NOT NULL DEFAULT 0,
+        closed INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         sync_status TEXT NOT NULL DEFAULT 'pending'
@@ -870,12 +987,14 @@ export async function migrateDbIfNeeded(db: LocalDatabase) {
         labour_type TEXT NOT NULL DEFAULT 'gw',
         labour TEXT NOT NULL,
         amount TEXT NOT NULL,
+        supplier_id TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL,
         sync_status TEXT NOT NULL DEFAULT 'pending',
         FOREIGN KEY (bill_id) REFERENCES bills(id) ON DELETE CASCADE
       );
 
       CREATE INDEX IF NOT EXISTS bill_items_bill_id_idx ON bill_items(bill_id);
+      CREATE INDEX IF NOT EXISTS bill_items_supplier_idx ON bill_items(supplier_id);
 
       CREATE TABLE IF NOT EXISTS bill_transactions (
         id TEXT PRIMARY KEY NOT NULL,
@@ -921,6 +1040,23 @@ export async function migrateDbIfNeeded(db: LocalDatabase) {
       );
 
       CREATE INDEX IF NOT EXISTS party_transactions_customer_id_idx ON party_transactions(customer_id);
+
+      CREATE TABLE IF NOT EXISTS transaction_allocations (
+        id TEXT PRIMARY KEY NOT NULL,
+        transaction_id TEXT NOT NULL,
+        customer_id TEXT NOT NULL DEFAULT '',
+        bill_id TEXT NOT NULL DEFAULT '',
+        bill_no INTEGER NOT NULL DEFAULT 0,
+        fine_alloc REAL NOT NULL DEFAULT 0,
+        amount_alloc REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending',
+        FOREIGN KEY (transaction_id) REFERENCES party_transactions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS transaction_allocations_txn_idx ON transaction_allocations(transaction_id);
+      CREATE INDEX IF NOT EXISTS transaction_allocations_customer_idx ON transaction_allocations(customer_id);
+      CREATE INDEX IF NOT EXISTS transaction_allocations_bill_idx ON transaction_allocations(bill_id);
 
       CREATE TABLE IF NOT EXISTS jangad_return_vouchers (
         id TEXT PRIMARY KEY NOT NULL,
@@ -976,6 +1112,8 @@ export async function migrateDbIfNeeded(db: LocalDatabase) {
         bank_amount REAL NOT NULL DEFAULT 0,
         discount_amount REAL NOT NULL DEFAULT 0,
         note TEXT NOT NULL DEFAULT '',
+        source_type TEXT NOT NULL DEFAULT 'manual',
+        source_bill_id TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         sync_status TEXT NOT NULL DEFAULT 'pending',
@@ -983,6 +1121,26 @@ export async function migrateDbIfNeeded(db: LocalDatabase) {
       );
 
       CREATE INDEX IF NOT EXISTS supplier_transactions_supplier_id_idx ON supplier_transactions(supplier_id);
+      CREATE INDEX IF NOT EXISTS supplier_transactions_source_bill_idx ON supplier_transactions(source_bill_id);
+
+      CREATE TABLE IF NOT EXISTS supplier_purchase_items (
+        id TEXT PRIMARY KEY NOT NULL,
+        transaction_id TEXT NOT NULL,
+        supplier_id TEXT NOT NULL DEFAULT '',
+        line_no INTEGER NOT NULL DEFAULT 0,
+        item_name TEXT NOT NULL DEFAULT '',
+        pcs TEXT NOT NULL DEFAULT '',
+        weight TEXT NOT NULL DEFAULT '',
+        touch TEXT NOT NULL DEFAULT '',
+        fine TEXT NOT NULL DEFAULT '',
+        rate TEXT NOT NULL DEFAULT '',
+        amount TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending',
+        FOREIGN KEY (transaction_id) REFERENCES supplier_transactions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS supplier_purchase_items_txn_idx ON supplier_purchase_items(transaction_id);
+      CREATE INDEX IF NOT EXISTS supplier_purchase_items_supplier_idx ON supplier_purchase_items(supplier_id);
 
       CREATE TABLE IF NOT EXISTS cash_bank_entries (
         id TEXT PRIMARY KEY NOT NULL,
@@ -998,6 +1156,20 @@ export async function migrateDbIfNeeded(db: LocalDatabase) {
       );
 
       CREATE INDEX IF NOT EXISTS cash_bank_entries_date_idx ON cash_bank_entries(entry_date);
+
+      CREATE TABLE IF NOT EXISTS devices (
+        id TEXT PRIMARY KEY NOT NULL,
+        device_id TEXT NOT NULL DEFAULT '',
+        user_email TEXT NOT NULL DEFAULT '',
+        device_name TEXT NOT NULL DEFAULT '',
+        platform TEXT NOT NULL DEFAULT '',
+        last_seen TEXT NOT NULL DEFAULT '',
+        revoked INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending'
+      );
+      CREATE INDEX IF NOT EXISTS devices_user_idx ON devices(user_email);
     `);
 
     const today = localIsoDate();
@@ -1291,6 +1463,92 @@ export async function migrateDbIfNeeded(db: LocalDatabase) {
     `);
   }
 
+  if (currentVersion >= 1 && currentVersion < 20) {
+    // Per-item supplier linkage + markers so bill-generated supplier postings
+    // can be distinguished from manual ones and reconciled on bill edit/delete.
+    await db.execAsync(`
+      ALTER TABLE bill_items ADD COLUMN supplier_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE supplier_transactions ADD COLUMN source_type TEXT NOT NULL DEFAULT 'manual';
+      ALTER TABLE supplier_transactions ADD COLUMN source_bill_id TEXT NOT NULL DEFAULT '';
+      CREATE INDEX IF NOT EXISTS supplier_transactions_source_bill_idx ON supplier_transactions(source_bill_id);
+      CREATE INDEX IF NOT EXISTS bill_items_supplier_idx ON bill_items(supplier_id);
+    `);
+  }
+
+  if (currentVersion >= 1 && currentVersion < 21) {
+    // Line items for supplier purchase vouchers (item name + pcs + fine etc).
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS supplier_purchase_items (
+        id TEXT PRIMARY KEY NOT NULL,
+        transaction_id TEXT NOT NULL,
+        supplier_id TEXT NOT NULL DEFAULT '',
+        line_no INTEGER NOT NULL DEFAULT 0,
+        item_name TEXT NOT NULL DEFAULT '',
+        pcs TEXT NOT NULL DEFAULT '',
+        weight TEXT NOT NULL DEFAULT '',
+        touch TEXT NOT NULL DEFAULT '',
+        fine TEXT NOT NULL DEFAULT '',
+        rate TEXT NOT NULL DEFAULT '',
+        amount TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending',
+        FOREIGN KEY (transaction_id) REFERENCES supplier_transactions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS supplier_purchase_items_txn_idx ON supplier_purchase_items(transaction_id);
+      CREATE INDEX IF NOT EXISTS supplier_purchase_items_supplier_idx ON supplier_purchase_items(supplier_id);
+    `);
+  }
+
+  if (currentVersion >= 1 && currentVersion < 22) {
+    // Allocations linking a party transaction to the bill(s) it settles.
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS transaction_allocations (
+        id TEXT PRIMARY KEY NOT NULL,
+        transaction_id TEXT NOT NULL,
+        customer_id TEXT NOT NULL DEFAULT '',
+        bill_id TEXT NOT NULL DEFAULT '',
+        bill_no INTEGER NOT NULL DEFAULT 0,
+        fine_alloc REAL NOT NULL DEFAULT 0,
+        amount_alloc REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending',
+        FOREIGN KEY (transaction_id) REFERENCES party_transactions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS transaction_allocations_txn_idx ON transaction_allocations(transaction_id);
+      CREATE INDEX IF NOT EXISTS transaction_allocations_customer_idx ON transaction_allocations(customer_id);
+      CREATE INDEX IF NOT EXISTS transaction_allocations_bill_idx ON transaction_allocations(bill_id);
+    `);
+  }
+
+  if (currentVersion >= 1 && currentVersion < 23) {
+    // Day-end actual remaining stock + closed flag for market-run reconciliation.
+    await db.execAsync(`
+      ALTER TABLE market_runs ADD COLUMN actual_silver_remaining REAL NOT NULL DEFAULT 0;
+      ALTER TABLE market_runs ADD COLUMN actual_gold_remaining REAL NOT NULL DEFAULT 0;
+      ALTER TABLE market_runs ADD COLUMN closed INTEGER NOT NULL DEFAULT 0;
+    `);
+  }
+
+  if (currentVersion >= 1 && currentVersion < 24) {
+    // Logged-in device registry for device management / remote sign-out.
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS devices (
+        id TEXT PRIMARY KEY NOT NULL,
+        device_id TEXT NOT NULL DEFAULT '',
+        user_email TEXT NOT NULL DEFAULT '',
+        device_name TEXT NOT NULL DEFAULT '',
+        platform TEXT NOT NULL DEFAULT '',
+        last_seen TEXT NOT NULL DEFAULT '',
+        revoked INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sync_status TEXT NOT NULL DEFAULT 'pending'
+      );
+      CREATE INDEX IF NOT EXISTS devices_user_idx ON devices(user_email);
+    `);
+  }
+
   await db.execAsync(`PRAGMA user_version = ${DATABASE_VERSION}`);
 }
 
@@ -1486,6 +1744,25 @@ function billCustomerProfileDraft(customer: CustomerDraft): CustomerDraft {
   };
 }
 
+// Bills reduce supplier stock through bill_items.supplier_id. They must not
+// create supplier payable vouchers; supplier vouchers are only for purchase /
+// payment entries. This cleanup removes older auto-posted bill vouchers when a
+// bill is saved or edited.
+async function syncBillSupplierPostings(
+  db: LocalDatabase,
+  billId: string,
+  _billNo: number,
+  _billDate: string,
+  _items: BillItemDraft[],
+  _timestamp: string,
+) {
+  await ensureSupplierStorage(db);
+  await db.runAsync(
+    "DELETE FROM supplier_transactions WHERE source_type = 'bill' AND source_bill_id = ?",
+    [billId],
+  );
+}
+
 export async function createBill(db: LocalDatabase, input: BillSaveInput) {
   const timestamp = nowIso();
   const customer = await upsertCustomer(db, billCustomerProfileDraft(input.customer));
@@ -1536,8 +1813,8 @@ export async function createBill(db: LocalDatabase, input: BillSaveInput) {
   for (const [index, item] of cleanItems.entries()) {
     await db.runAsync(
       `INSERT INTO bill_items
-        (id, bill_id, line_no, material, item_name, weight, packet_less, touch, fine, pcs, rate, labour_type, labour, amount, updated_at, sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        (id, bill_id, line_no, material, item_name, weight, packet_less, touch, fine, pcs, rate, labour_type, labour, amount, supplier_id, updated_at, sync_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         createId('item'),
         billId,
@@ -1553,10 +1830,13 @@ export async function createBill(db: LocalDatabase, input: BillSaveInput) {
         item.labourType ?? 'gw',
         item.labour.trim(),
         String(parseAmount(item.amount) || item.amount.trim()),
+        item.supplierId?.trim() ?? '',
         timestamp,
       ],
     );
   }
+
+  await syncBillSupplierPostings(db, billId, input.billNo, input.billDate, cleanItems, timestamp);
 
   const row = await db.getFirstAsync<BillRow>('SELECT * FROM bills WHERE id = ?', [billId]);
   if (!row) {
@@ -1671,8 +1951,8 @@ export async function updateBill(db: LocalDatabase, billId: string, input: BillS
   for (const [index, item] of cleanItems.entries()) {
     await db.runAsync(
       `INSERT INTO bill_items
-        (id, bill_id, line_no, material, item_name, weight, packet_less, touch, fine, pcs, rate, labour_type, labour, amount, updated_at, sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        (id, bill_id, line_no, material, item_name, weight, packet_less, touch, fine, pcs, rate, labour_type, labour, amount, supplier_id, updated_at, sync_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         createId('item'),
         billId,
@@ -1688,10 +1968,13 @@ export async function updateBill(db: LocalDatabase, billId: string, input: BillS
         item.labourType ?? 'gw',
         item.labour.trim(),
         String(parseAmount(item.amount) || item.amount.trim()),
+        item.supplierId?.trim() ?? '',
         timestamp,
       ],
     );
   }
+
+  await syncBillSupplierPostings(db, billId, input.billNo, input.billDate, cleanItems, timestamp);
 
   const row = await db.getFirstAsync<BillRow>('SELECT * FROM bills WHERE id = ?', [billId]);
   if (!row) {
@@ -1792,23 +2075,37 @@ export async function getBillReminders(db: LocalDatabase) {
 
 export async function upsertMarketRun(
   db: LocalDatabase,
-  input: { runDate: string; goldWeight?: string | number; silverWeight: string | number; note: string },
+  input: {
+    runDate: string;
+    goldWeight?: string | number;
+    silverWeight: string | number;
+    note: string;
+    actualSilverRemaining?: string | number;
+    actualGoldRemaining?: string | number;
+    closed?: boolean;
+  },
 ) {
   const timestamp = nowIso();
   const existing = await db.getFirstAsync<MarketRunRow>('SELECT * FROM market_runs WHERE run_date = ?', [input.runDate]);
   const id = existing?.id ?? createId('mrun');
   const createdAt = existing?.created_at ?? timestamp;
+  const actualSilver = input.actualSilverRemaining !== undefined ? parseAmount(input.actualSilverRemaining) : Number(existing?.actual_silver_remaining ?? 0);
+  const actualGold = input.actualGoldRemaining !== undefined ? parseAmount(input.actualGoldRemaining) : Number(existing?.actual_gold_remaining ?? 0);
+  const closed = input.closed !== undefined ? (input.closed ? 1 : 0) : Number(existing?.closed ?? 0);
 
   await db.runAsync(
     `INSERT OR REPLACE INTO market_runs
-      (id, run_date, gold_weight, silver_weight, note, created_at, updated_at, sync_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      (id, run_date, gold_weight, silver_weight, note, actual_silver_remaining, actual_gold_remaining, closed, created_at, updated_at, sync_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
     [
       id,
       input.runDate,
       parseAmount(input.goldWeight),
       parseAmount(input.silverWeight),
       input.note.trim(),
+      actualSilver,
+      actualGold,
+      closed,
       createdAt,
       timestamp,
     ],
@@ -1851,15 +2148,60 @@ export async function getMarketStockSummaries(db: LocalDatabase): Promise<Market
   return runs.map((row) => {
     const run = mapMarketRun(row);
     const sold = soldByDate.get(run.runDate) ?? { billIds: new Set<string>(), goldSold: 0, silverSold: 0 };
+    const goldRemaining = Math.max(run.goldWeight - sold.goldSold, 0);
+    const silverRemaining = Math.max(run.silverWeight - sold.silverSold, 0);
     return {
       ...run,
       billCount: sold.billIds.size,
       goldSold: sold.goldSold,
       silverSold: sold.silverSold,
-      goldRemaining: Math.max(run.goldWeight - sold.goldSold, 0),
-      silverRemaining: Math.max(run.silverWeight - sold.silverSold, 0),
+      goldRemaining,
+      silverRemaining,
+      // Only meaningful once the day is closed with an actual count.
+      goldVariance: run.closed ? Number((goldRemaining - run.actualGoldRemaining).toFixed(3)) : 0,
+      silverVariance: run.closed ? Number((silverRemaining - run.actualSilverRemaining).toFixed(3)) : 0,
     };
   });
+}
+
+// Register (or refresh) this device for the signed-in user. A fresh login
+// clears any prior revoked flag — "remove device" only forces an immediate
+// sign-out, it isn't a permanent ban.
+export async function registerDevice(
+  db: LocalDatabase,
+  input: { deviceId: string; userEmail: string; deviceName: string; platform: string },
+) {
+  const timestamp = nowIso();
+  const existing = await db.getFirstAsync<DeviceRow>('SELECT * FROM devices WHERE id = ?', [input.deviceId]);
+  const createdAt = existing?.created_at ?? timestamp;
+  await db.runAsync(
+    `INSERT OR REPLACE INTO devices
+      (id, device_id, user_email, device_name, platform, last_seen, revoked, created_at, updated_at, sync_status)
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'pending')`,
+    [input.deviceId, input.deviceId, input.userEmail.trim().toLowerCase(), input.deviceName, input.platform, timestamp, createdAt, timestamp],
+  );
+  const row = await db.getFirstAsync<DeviceRow>('SELECT * FROM devices WHERE id = ?', [input.deviceId]);
+  return row ? mapDevice(row) : null;
+}
+
+export async function getDevicesForUser(db: LocalDatabase, userEmail: string): Promise<Device[]> {
+  const rows = await db.getAllAsync<DeviceRow>(
+    'SELECT * FROM devices WHERE user_email = ? ORDER BY last_seen DESC',
+    [userEmail.trim().toLowerCase()],
+  );
+  return rows.map(mapDevice);
+}
+
+export async function setDeviceRevoked(db: LocalDatabase, deviceId: string, revoked: boolean) {
+  await db.runAsync(
+    "UPDATE devices SET revoked = ?, updated_at = ?, sync_status = 'pending' WHERE id = ?",
+    [revoked ? 1 : 0, nowIso(), deviceId],
+  );
+}
+
+export async function isDeviceRevoked(db: LocalDatabase, deviceId: string): Promise<boolean> {
+  const row = await db.getFirstAsync<{ revoked: number }>('SELECT revoked FROM devices WHERE id = ?', [deviceId]);
+  return Number(row?.revoked ?? 0) === 1;
 }
 
 export async function createBillTransaction(
@@ -1955,6 +2297,7 @@ export async function createPartyTransaction(
     paymentAmount: string | number;
     discountAmount: string | number;
     note: string;
+    allocations?: { billId: string; billNo: number; fineAlloc: number; amountAlloc: number }[];
   },
 ) {
   const timestamp = nowIso();
@@ -1989,12 +2332,95 @@ export async function createPartyTransaction(
     ],
   );
 
+  for (const alloc of input.allocations ?? []) {
+    if (alloc.fineAlloc <= 0 && alloc.amountAlloc <= 0) continue;
+    await db.runAsync(
+      `INSERT INTO transaction_allocations
+        (id, transaction_id, customer_id, bill_id, bill_no, fine_alloc, amount_alloc, created_at, updated_at, sync_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [
+        createId('alloc'),
+        id,
+        input.customerId,
+        alloc.billId,
+        alloc.billNo,
+        Number(alloc.fineAlloc.toFixed(3)),
+        Number(alloc.amountAlloc.toFixed(2)),
+        timestamp,
+        timestamp,
+      ],
+    );
+  }
+
   const row = await db.getFirstAsync<PartyTransactionRow>('SELECT * FROM party_transactions WHERE id = ?', [id]);
   if (!row) {
     throw new Error('Party transaction save nahi hua.');
   }
 
   return mapPartyTransaction(row);
+}
+
+export async function getAllTransactionAllocations(db: LocalDatabase) {
+  const rows = await db.getAllAsync<TransactionAllocationRow>('SELECT * FROM transaction_allocations');
+  return rows.map(mapTransactionAllocation);
+}
+
+// Per-bill running balance for a party: original fine/amount due (after bill
+// creation receipts), minus what's been settled via bill transactions and via
+// party-transaction allocations, = outstanding ("balance version" of a bill).
+export async function getPartyBillBalances(db: LocalDatabase, customerId: string): Promise<BillBalance[]> {
+  const bills = await db.getAllAsync<{ id: string; bill_no: number; bill_date: string; net_total: number; received_fine: number; rate_cut_fine: number }>(
+    'SELECT id, bill_no, bill_date, net_total, received_fine, rate_cut_fine FROM bills WHERE customer_id = ? ORDER BY bill_no ASC',
+    [customerId],
+  );
+  if (!bills.length) return [];
+
+  const [itemFines, billTxns, allocs] = await Promise.all([
+    db.getAllAsync<{ bill_id: string; total_fine: number }>(
+      "SELECT bill_id, SUM(CAST(fine AS REAL)) AS total_fine FROM bill_items WHERE bill_id IN (SELECT id FROM bills WHERE customer_id = ?) GROUP BY bill_id",
+      [customerId],
+    ),
+    db.getAllAsync<{ bill_id: string; fine_weight: number; cash_amount: number; bank_amount: number; rate_cut_amount: number }>(
+      "SELECT bill_id, fine_weight, cash_amount, bank_amount, rate_cut_amount FROM bill_transactions WHERE bill_id IN (SELECT id FROM bills WHERE customer_id = ?)",
+      [customerId],
+    ),
+    db.getAllAsync<{ bill_id: string; fine_alloc: number; amount_alloc: number }>(
+      'SELECT bill_id, fine_alloc, amount_alloc FROM transaction_allocations WHERE customer_id = ?',
+      [customerId],
+    ),
+  ]);
+
+  const fineByBill = new Map(itemFines.map((r) => [r.bill_id, Number(r.total_fine ?? 0)]));
+  const paidByBill = new Map<string, { fine: number; amount: number }>();
+  const add = (id: string, fine: number, amount: number) => {
+    const acc = paidByBill.get(id) ?? { fine: 0, amount: 0 };
+    acc.fine += fine;
+    acc.amount += amount;
+    paidByBill.set(id, acc);
+  };
+  for (const t of billTxns) {
+    add(t.bill_id, Number(t.fine_weight ?? 0), Number(t.cash_amount ?? 0) + Number(t.bank_amount ?? 0) + Number(t.rate_cut_amount ?? 0));
+  }
+  for (const a of allocs) {
+    add(a.bill_id, Number(a.fine_alloc ?? 0), Number(a.amount_alloc ?? 0));
+  }
+
+  return bills.map((b) => {
+    const fineDue = Math.max(Number((Number(fineByBill.get(b.id) ?? 0) - Number(b.received_fine ?? 0) - Number(b.rate_cut_fine ?? 0)).toFixed(3)), 0);
+    const amountDue = Math.max(Number(b.net_total ?? 0), 0);
+    const paid = paidByBill.get(b.id) ?? { fine: 0, amount: 0 };
+    return {
+      billId: b.id,
+      billNo: Number(b.bill_no ?? 0),
+      billDate: b.bill_date,
+      fineDue,
+      amountDue,
+      finePaid: Number(paid.fine.toFixed(3)),
+      amountPaid: Number(paid.amount.toFixed(2)),
+      fineOutstanding: Number(Math.max(fineDue - paid.fine, 0).toFixed(3)),
+      amountOutstanding: Number(Math.max(amountDue - paid.amount, 0).toFixed(2)),
+    };
+  });
 }
 
 export async function getPartyTransactions(db: LocalDatabase, customerId: string) {
@@ -2044,6 +2470,8 @@ async function ensureSupplierStorage(db: LocalDatabase) {
       bank_amount REAL NOT NULL DEFAULT 0,
       discount_amount REAL NOT NULL DEFAULT 0,
       note TEXT NOT NULL DEFAULT '',
+      source_type TEXT NOT NULL DEFAULT 'manual',
+      source_bill_id TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending',
@@ -2051,6 +2479,25 @@ async function ensureSupplierStorage(db: LocalDatabase) {
     );
 
   CREATE INDEX IF NOT EXISTS supplier_transactions_supplier_id_idx ON supplier_transactions(supplier_id);
+  CREATE INDEX IF NOT EXISTS supplier_transactions_source_bill_idx ON supplier_transactions(source_bill_id);
+
+  CREATE TABLE IF NOT EXISTS supplier_purchase_items (
+    id TEXT PRIMARY KEY NOT NULL,
+    transaction_id TEXT NOT NULL,
+    supplier_id TEXT NOT NULL DEFAULT '',
+    line_no INTEGER NOT NULL DEFAULT 0,
+    item_name TEXT NOT NULL DEFAULT '',
+    pcs TEXT NOT NULL DEFAULT '',
+    weight TEXT NOT NULL DEFAULT '',
+    touch TEXT NOT NULL DEFAULT '',
+    fine TEXT NOT NULL DEFAULT '',
+    rate TEXT NOT NULL DEFAULT '',
+    amount TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    sync_status TEXT NOT NULL DEFAULT 'pending'
+  );
+  CREATE INDEX IF NOT EXISTS supplier_purchase_items_txn_idx ON supplier_purchase_items(transaction_id);
+  CREATE INDEX IF NOT EXISTS supplier_purchase_items_supplier_idx ON supplier_purchase_items(supplier_id);
   `);
 
   try {
@@ -2132,13 +2579,18 @@ export async function createSupplierTransaction(
     bankAmount: string | number;
     discountAmount: string | number;
     note: string;
+    items?: { itemName: string; pcs: string; weight: string; touch: string; fine: string; rate: string; amount: string }[];
   },
 ) {
   await ensureSupplierStorage(db);
   const timestamp = nowIso();
   const id = createId('stxn');
   const voucherNo = await getNextSupplierVoucherNo(db);
-  const fineWeight = roundFineToHalfGram(parseAmount(input.fineWeight));
+  // On a purchase with item lines, fine is the sum of the lines (each line's
+  // fine already defaults touch to 100% via the shared calc helpers).
+  const purchaseItems = (input.items ?? []).filter((item) => item.itemName.trim());
+  const itemsFine = purchaseItems.reduce((sum, item) => sum + parseAmount(item.fine), 0);
+  const fineWeight = roundFineToHalfGram(purchaseItems.length ? itemsFine : parseAmount(input.fineWeight));
   const bookedRate = parseAmount(input.bookedRate);
   const fineValue = fineValueFromRate(input.material, fineWeight, bookedRate);
 
@@ -2166,12 +2618,219 @@ export async function createSupplierTransaction(
     ],
   );
 
+  for (const [index, item] of purchaseItems.entries()) {
+    await db.runAsync(
+      `INSERT INTO supplier_purchase_items
+        (id, transaction_id, supplier_id, line_no, item_name, pcs, weight, touch, fine, rate, amount, updated_at, sync_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      [
+        createId('spi'),
+        id,
+        input.supplierId,
+        index + 1,
+        item.itemName.trim(),
+        item.pcs.trim(),
+        item.weight.trim(),
+        item.touch.trim(),
+        item.fine.trim(),
+        item.rate.trim(),
+        item.amount.trim(),
+        timestamp,
+      ],
+    );
+  }
+
   const row = await db.getFirstAsync<SupplierTransactionRow>('SELECT * FROM supplier_transactions WHERE id = ?', [id]);
   if (!row) {
     throw new Error('Supplier transaction save nahi hua.');
   }
 
   return mapSupplierTransaction(row);
+}
+
+export async function getSupplierPurchaseItems(db: LocalDatabase, transactionId: string) {
+  const rows = await db.getAllAsync<SupplierPurchaseItemRow>(
+    'SELECT * FROM supplier_purchase_items WHERE transaction_id = ? ORDER BY line_no ASC',
+    [transactionId],
+  );
+  return rows.map(mapSupplierPurchaseItem);
+}
+
+// Phone-friendly purchased-items stock ledger: purchase stock added from each
+// supplier per item, minus sold stock from sale bill items linked to that
+// supplier, = stock on hand.
+export async function getPurchasedItemsLedger(db: LocalDatabase): Promise<PurchaseStockRow[]> {
+  const [purchased, purchaseTouchRows, soldRows, suppliers] = await Promise.all([
+    db.getAllAsync<{ supplier_id: string; item_name: string; pcs_in: number; fine_in: number; weight_in: number }>(
+      `SELECT supplier_id, item_name,
+              SUM(CAST(pcs AS REAL)) AS pcs_in,
+              SUM(CAST(fine AS REAL)) AS fine_in,
+              SUM(CAST(weight AS REAL)) AS weight_in
+       FROM supplier_purchase_items GROUP BY supplier_id, item_name`,
+    ),
+    db.getAllAsync<{ supplier_id: string; item_name: string; weight: string; touch: string }>(
+      'SELECT supplier_id, item_name, weight, touch FROM supplier_purchase_items',
+    ),
+    db.getAllAsync<BillItemRow>("SELECT * FROM bill_items WHERE supplier_id != ''"),
+    db.getAllAsync<{ id: string; name: string }>('SELECT id, name FROM supplier_accounts'),
+  ]);
+
+  const supplierName = new Map(suppliers.map((s) => [s.id, s.name]));
+  const touchAgg = new Map<string, { weightedTouch: number; weight: number }>();
+  for (const row of purchaseTouchRows) {
+    const key = `${row.supplier_id}::${(row.item_name || '').toLowerCase()}`;
+    const weight = parseAmount(row.weight);
+    const touch = parseAmount(row.touch);
+    if (!key || weight <= 0 || touch <= 0) continue;
+    const agg = touchAgg.get(key) ?? { weightedTouch: 0, weight: 0 };
+    agg.weightedTouch += weight * touch;
+    agg.weight += weight;
+    touchAgg.set(key, agg);
+  }
+  const purchaseTouch = new Map(
+    [...touchAgg.entries()].map(([key, agg]) => [key, agg.weight > 0 ? agg.weightedTouch / agg.weight : 0]),
+  );
+  const soldMap = new Map<string, { fineSold: number; pcsSold: number; weightSold: number }>();
+  for (const row of soldRows) {
+    const item = mapBillItem(row);
+    const key = `${item.supplierId ?? ''}::${(item.itemName || '').toLowerCase()}`;
+    const netWeight = calculateNetWeight(item.weight, item.packetLess);
+    const touch = purchaseTouch.get(key) ?? parseAmount(item.touch);
+    const agg = soldMap.get(key) ?? { fineSold: 0, pcsSold: 0, weightSold: 0 };
+    agg.pcsSold += parseAmount(item.pcs);
+    agg.weightSold += netWeight;
+    agg.fineSold += (netWeight * touch) / 100;
+    soldMap.set(key, agg);
+  }
+
+  const rows = purchased
+    .filter((p) => p.item_name.trim())
+    .map((p) => {
+      const pcsIn = Number(p.pcs_in ?? 0);
+      const fineIn = Number(p.fine_in ?? 0);
+      const weightIn = Number(p.weight_in ?? 0);
+      const soldValues = soldMap.get(`${p.supplier_id}::${p.item_name.toLowerCase()}`) ?? { fineSold: 0, pcsSold: 0, weightSold: 0 };
+      return {
+        supplierId: p.supplier_id,
+        supplierName: supplierName.get(p.supplier_id) ?? 'Supplier',
+        itemName: p.item_name,
+        pcsIn,
+        pcsSold: soldValues.pcsSold,
+        pcsOnHand: pcsIn - soldValues.pcsSold,
+        fineIn: Number(fineIn.toFixed(3)),
+        fineSold: Number(soldValues.fineSold.toFixed(3)),
+        fineOnHand: Number((fineIn - soldValues.fineSold).toFixed(3)),
+        weightIn: Number(weightIn.toFixed(3)),
+        weightSold: Number(soldValues.weightSold.toFixed(3)),
+        weightOnHand: Number((weightIn - soldValues.weightSold).toFixed(3)),
+      };
+    });
+
+  return rows.sort((a, b) => a.supplierName.localeCompare(b.supplierName) || a.itemName.localeCompare(b.itemName));
+}
+
+export async function getStockItemLedger(db: LocalDatabase, supplierId: string, itemName: string): Promise<StockItemLedger> {
+  await ensureSupplierStorage(db);
+  const cleanSupplierId = supplierId.trim();
+  const cleanItemName = itemName.trim();
+  const [supplier, purchaseRows, saleRows] = await Promise.all([
+    db.getFirstAsync<{ id: string; name: string }>('SELECT id, name FROM supplier_accounts WHERE id = ?', [cleanSupplierId]),
+    db.getAllAsync<
+      SupplierPurchaseItemRow & {
+        supplier_name: string;
+        transaction_date: string;
+        voucher_no: number;
+      }
+    >(
+      `SELECT spi.*, s.name AS supplier_name, st.transaction_date, st.voucher_no
+       FROM supplier_purchase_items spi
+       LEFT JOIN supplier_transactions st ON st.id = spi.transaction_id
+       LEFT JOIN supplier_accounts s ON s.id = spi.supplier_id
+       WHERE spi.supplier_id = ? AND lower(spi.item_name) = lower(?)
+       ORDER BY st.transaction_date DESC, st.voucher_no DESC, spi.line_no ASC`,
+      [cleanSupplierId, cleanItemName],
+    ),
+    db.getAllAsync<
+      BillItemRow & {
+        bill_date: string;
+        bill_no: number;
+        customer_name: string;
+      }
+    >(
+      `SELECT bi.*, b.bill_date, b.bill_no, b.customer_name
+       FROM bill_items bi
+       JOIN bills b ON b.id = bi.bill_id
+       WHERE bi.supplier_id = ? AND lower(bi.item_name) = lower(?)
+       ORDER BY b.bill_date DESC, b.bill_no DESC, bi.line_no ASC`,
+      [cleanSupplierId, cleanItemName],
+    ),
+  ]);
+
+  const purchases: StockItemLedgerEntry[] = purchaseRows.map((row) => {
+    const weight = parseAmount(row.weight);
+    return {
+      accountName: row.supplier_name || supplier?.name || 'Supplier',
+      amount: parseAmount(row.amount),
+      date: row.transaction_date || localIsoDate(),
+      fine: parseAmount(row.fine),
+      id: row.id,
+      netWeight: weight,
+      pcs: parseAmount(row.pcs),
+      rate: parseAmount(row.rate),
+      refNo: Number(row.voucher_no ?? 0),
+      touch: parseAmount(row.touch),
+      weight,
+    };
+  });
+
+  const purchaseTouchWeight = purchases.reduce((sum, entry) => sum + entry.weight * entry.touch, 0);
+  const purchaseWeight = purchases.reduce((sum, entry) => sum + entry.weight, 0);
+  const weightedPurchaseTouch = purchaseWeight > 0 ? purchaseTouchWeight / purchaseWeight : 0;
+
+  const sales: StockItemLedgerEntry[] = saleRows.map((row) => {
+    const item = mapBillItem(row);
+    const weight = parseAmount(item.weight);
+    const packetLess = parseAmount(item.packetLess);
+    const netWeight = calculateNetWeight(item.weight, item.packetLess);
+    const sourceTouch = weightedPurchaseTouch || parseAmount(item.touch);
+    return {
+      accountName: row.customer_name || 'Party',
+      amount: parseAmount(item.amount),
+      date: row.bill_date,
+      fine: parseAmount(item.fine),
+      id: row.id,
+      netWeight,
+      packetLess,
+      pcs: parseAmount(item.pcs),
+      rate: parseAmount(item.rate),
+      refNo: Number(row.bill_no ?? 0),
+      sourceFine: Number(((netWeight * sourceTouch) / 100).toFixed(3)),
+      sourceTouch: Number(sourceTouch.toFixed(3)),
+      touch: parseAmount(item.touch),
+      weight,
+    };
+  });
+
+  const purchasePcs = purchases.reduce((sum, entry) => sum + entry.pcs, 0);
+  const salePcs = sales.reduce((sum, entry) => sum + entry.pcs, 0);
+  const purchaseFine = purchases.reduce((sum, entry) => sum + entry.fine, 0);
+  const saleFine = sales.reduce((sum, entry) => sum + entry.fine, 0);
+  const stockFineLess = sales.reduce((sum, entry) => sum + (entry.sourceFine ?? entry.fine), 0);
+
+  return {
+    fineBalance: Number((purchaseFine - stockFineLess).toFixed(3)),
+    itemName: cleanItemName,
+    pcsBalance: purchasePcs - salePcs,
+    purchaseFine: Number(purchaseFine.toFixed(3)),
+    purchasePcs,
+    purchases,
+    saleFine: Number(saleFine.toFixed(3)),
+    salePcs,
+    sales,
+    stockFineLess: Number(stockFineLess.toFixed(3)),
+    supplierId: cleanSupplierId,
+    supplierName: supplier?.name || purchases[0]?.accountName || 'Supplier',
+  };
 }
 
 export async function getSupplierAccounts(db: LocalDatabase) {
@@ -2181,7 +2840,7 @@ export async function getSupplierAccounts(db: LocalDatabase) {
 
 export async function getSupplierTransactions(db: LocalDatabase, supplierId: string) {
   const rows = await db.getAllAsync<SupplierTransactionRow>(
-    'SELECT * FROM supplier_transactions WHERE supplier_id = ? ORDER BY transaction_date DESC, voucher_no DESC',
+    "SELECT * FROM supplier_transactions WHERE supplier_id = ? AND COALESCE(source_type, 'manual') != 'bill' ORDER BY transaction_date DESC, voucher_no DESC",
     [supplierId],
   );
   return rows.map(mapSupplierTransaction);
@@ -2189,7 +2848,7 @@ export async function getSupplierTransactions(db: LocalDatabase, supplierId: str
 
 export async function getAllSupplierTransactions(db: LocalDatabase) {
   const rows = await db.getAllAsync<SupplierTransactionRow>(
-    'SELECT * FROM supplier_transactions ORDER BY transaction_date DESC, voucher_no DESC',
+    "SELECT * FROM supplier_transactions WHERE COALESCE(source_type, 'manual') != 'bill' ORDER BY transaction_date DESC, voucher_no DESC",
   );
   return rows.map(mapSupplierTransaction);
 }
@@ -2245,7 +2904,9 @@ export async function getAllCashBankEntries(db: LocalDatabase) {
 export async function getSupplierLedgerSummaries(db: LocalDatabase) {
   const [suppliers, transactions] = await Promise.all([
     db.getAllAsync<SupplierAccountRow>('SELECT * FROM supplier_accounts ORDER BY name ASC'),
-    db.getAllAsync<SupplierTransactionRow>('SELECT * FROM supplier_transactions ORDER BY transaction_date DESC, voucher_no DESC'),
+    db.getAllAsync<SupplierTransactionRow>(
+      "SELECT * FROM supplier_transactions WHERE COALESCE(source_type, 'manual') != 'bill' ORDER BY transaction_date DESC, voucher_no DESC",
+    ),
   ]);
   const ledgers = new Map<string, SupplierLedgerSummary>();
 
@@ -2313,6 +2974,101 @@ export async function getSupplierLedgerSummaries(db: LocalDatabase) {
       finePayable: Math.max(Number(ledger.finePayable.toFixed(3)), 0),
     }))
     .sort((a, b) => b.lastTransactionDate.localeCompare(a.lastTransactionDate));
+}
+
+// Comparison / accounting ledger: for every bill that has a linked supplier,
+// compare supplier stock less against party fine credit, and surface fine
+// margin plus labour margin. Bills with no linked supplier are excluded
+// ("not concluded"). Query-time, so auto-realtime.
+export async function getFlowLedger(db: LocalDatabase): Promise<FlowLedgerSummary> {
+  const [bills, itemRows, purchaseTouchRows, suppliers] = await Promise.all([
+    db.getAllAsync<{ id: string; bill_no: number; bill_date: string; customer_name: string; net_total: number }>(
+      'SELECT id, bill_no, bill_date, customer_name, net_total FROM bills',
+    ),
+    db.getAllAsync<BillItemRow>('SELECT * FROM bill_items'),
+    db.getAllAsync<{ supplier_id: string; item_name: string; weight: string; touch: string }>(
+      'SELECT supplier_id, item_name, weight, touch FROM supplier_purchase_items',
+    ),
+    db.getAllAsync<{ id: string; name: string }>('SELECT id, name FROM supplier_accounts'),
+  ]);
+
+  const supplierName = new Map(suppliers.map((s) => [s.id, s.name]));
+  const touchAgg = new Map<string, { weightedTouch: number; weight: number }>();
+  for (const row of purchaseTouchRows) {
+    const key = `${row.supplier_id}::${(row.item_name || '').toLowerCase()}`;
+    const weight = parseAmount(row.weight);
+    const touch = parseAmount(row.touch);
+    if (!key || weight <= 0 || touch <= 0) continue;
+    const agg = touchAgg.get(key) ?? { weightedTouch: 0, weight: 0 };
+    agg.weightedTouch += weight * touch;
+    agg.weight += weight;
+    touchAgg.set(key, agg);
+  }
+  const purchaseTouch = new Map(
+    [...touchAgg.entries()].map(([key, agg]) => [key, agg.weight > 0 ? agg.weightedTouch / agg.weight : 0]),
+  );
+
+  // Per-bill totals from items: party fine credit + supplier stock less + labour margin.
+  const itemAgg = new Map<string, { fineSold: number; fineLinked: number; labour: number; supplierIds: Set<string> }>();
+  for (const row of itemRows) {
+    const item = mapBillItem(row);
+    const fine = parseAmount(item.fine);
+    const agg = itemAgg.get(row.bill_id) ?? { fineSold: 0, fineLinked: 0, labour: 0, supplierIds: new Set<string>() };
+    agg.fineSold += fine;
+    if (item.supplierId?.trim()) {
+      const supplierId = item.supplierId.trim();
+      const key = `${supplierId}::${(item.itemName || '').toLowerCase()}`;
+      const sourceTouch = purchaseTouch.get(key);
+      agg.fineLinked += sourceTouch && sourceTouch > 0 ? (calculateNetWeight(item.weight, item.packetLess) * sourceTouch) / 100 : fine;
+      agg.supplierIds.add(supplierId);
+    }
+    agg.labour += calculateLabourCharge(item);
+    itemAgg.set(row.bill_id, agg);
+  }
+
+  const rows: FlowLedgerRow[] = [];
+  let totalFineLinked = 0;
+  let totalFineSold = 0;
+  let totalLabourEarned = 0;
+  let totalAmount = 0;
+
+  for (const b of bills) {
+    const items = itemAgg.get(b.id);
+    if (!items || !items.supplierIds.size) continue; // only bills linked to supplier stock are concluded
+    const fineLinked = Number(items.fineLinked.toFixed(3));
+    const fineSold = Number(items.fineSold.toFixed(3));
+    const labourEarned = Math.round(items.labour);
+    const amount = Number(b.net_total ?? 0);
+    const names = [...items.supplierIds].map((id) => supplierName.get(id) ?? 'Supplier').join(', ');
+    rows.push({
+      billId: b.id,
+      billNo: Number(b.bill_no ?? 0),
+      date: b.bill_date,
+      partyName: b.customer_name || 'Party',
+      supplierNames: names || '—',
+      fineLinked,
+      fineSold,
+      fineMargin: Number((fineSold - fineLinked).toFixed(3)),
+      labourEarned,
+      amount,
+    });
+    totalFineLinked += fineLinked;
+    totalFineSold += fineSold;
+    totalLabourEarned += labourEarned;
+    totalAmount += amount;
+  }
+
+  rows.sort((a, b) => b.date.localeCompare(a.date) || b.billNo - a.billNo);
+
+  return {
+    totalFineLinked: Number(totalFineLinked.toFixed(3)),
+    totalFineSold: Number(totalFineSold.toFixed(3)),
+    totalFineMargin: Number((totalFineSold - totalFineLinked).toFixed(3)),
+    totalLabourEarned: Math.round(totalLabourEarned),
+    totalAmount: Number(totalAmount.toFixed(2)),
+    billCount: rows.length,
+    rows,
+  };
 }
 
 export async function getRecentBills(db: LocalDatabase) {
@@ -3289,9 +4045,16 @@ export async function repairMirroredDiscountRows(db: LocalDatabase) {
 }
 
 export async function deletePartyWithBills(db: LocalDatabase, customerId: string) {
+  // Bill-sourced supplier postings FK to suppliers, not bills, so they don't
+  // cascade when the bills are removed — clear them explicitly first.
+  await db.runAsync(
+    "DELETE FROM supplier_transactions WHERE source_type = 'bill' AND source_bill_id IN (SELECT id FROM bills WHERE customer_id = ?)",
+    [customerId],
+  );
   await db.runAsync('DELETE FROM bill_items WHERE bill_id IN (SELECT id FROM bills WHERE customer_id = ?)', [customerId]);
   await db.runAsync('DELETE FROM bill_transactions WHERE bill_id IN (SELECT id FROM bills WHERE customer_id = ?)', [customerId]);
   await db.runAsync('DELETE FROM bill_reminders WHERE bill_id IN (SELECT id FROM bills WHERE customer_id = ?)', [customerId]);
+  await db.runAsync('DELETE FROM transaction_allocations WHERE customer_id = ?', [customerId]);
   await db.runAsync('DELETE FROM party_transactions WHERE customer_id = ?', [customerId]);
   await db.runAsync('DELETE FROM bills WHERE customer_id = ?', [customerId]);
   await db.runAsync('DELETE FROM customers WHERE id = ?', [customerId]);
@@ -3359,8 +4122,30 @@ export async function deleteJangadReturn(db: LocalDatabase, voucherId: string) {
 }
 
 import * as SQLite from 'expo-sqlite';
+
+// Wrap runAsync so that every data change (INSERT/UPDATE/DELETE) immediately
+// schedules a push to Supabase. This makes any new bill/transaction/etc. land
+// on other devices in well under a second, instead of waiting for the periodic
+// background timer. The "sync_status = 'synced'" guard skips the bookkeeping
+// updates the uploader itself writes, so there is no upload→mark→upload loop.
+function attachImmediateUpload(db: LocalDatabase) {
+  const anyDb = db as any;
+  if (anyDb.__immediateUploadPatched) return;
+  const originalRunAsync = anyDb.runAsync.bind(anyDb);
+  anyDb.runAsync = (...args: any[]) => {
+    const result = originalRunAsync(...args);
+    const sql = typeof args[0] === 'string' ? args[0] : (args[0]?.sql ?? '');
+    if (/^\s*(insert|update|delete)/i.test(sql) && !/sync_status\s*=\s*'synced'/i.test(sql)) {
+      Promise.resolve(result).then(() => scheduleImmediateUpload(db)).catch(() => {});
+    }
+    return result;
+  };
+  anyDb.__immediateUploadPatched = true;
+}
+
 export async function initDatabase(): Promise<LocalDatabase> {
   const db = await SQLite.openDatabaseAsync('billbook.db');
   await migrateDbIfNeeded(db);
+  attachImmediateUpload(db as unknown as LocalDatabase);
   return db as unknown as LocalDatabase;
 }

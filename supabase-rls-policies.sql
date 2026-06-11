@@ -135,3 +135,36 @@ CREATE POLICY "anon_delete_cash_bank_entries" ON cash_bank_entries FOR DELETE TO
 CREATE POLICY "anon_delete_market_runs" ON market_runs FOR DELETE TO anon USING (true);
 CREATE POLICY "anon_delete_jangad_return_vouchers" ON jangad_return_vouchers FOR DELETE TO anon USING (true);
 CREATE POLICY "anon_delete_jangad_return_items" ON jangad_return_items FOR DELETE TO anon USING (true);
+
+-- supplier_purchase_items (purchase voucher line items)
+ALTER TABLE supplier_purchase_items ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_select_supplier_purchase_items" ON supplier_purchase_items; END $$;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_insert_supplier_purchase_items" ON supplier_purchase_items; END $$;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_update_supplier_purchase_items" ON supplier_purchase_items; END $$;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_delete_supplier_purchase_items" ON supplier_purchase_items; END $$;
+CREATE POLICY "anon_select_supplier_purchase_items" ON supplier_purchase_items FOR SELECT TO anon USING (true);
+CREATE POLICY "anon_insert_supplier_purchase_items" ON supplier_purchase_items FOR INSERT TO anon WITH CHECK (true);
+CREATE POLICY "anon_update_supplier_purchase_items" ON supplier_purchase_items FOR UPDATE TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "anon_delete_supplier_purchase_items" ON supplier_purchase_items FOR DELETE TO anon USING (true);
+
+-- transaction_allocations (party transaction → bill links)
+ALTER TABLE transaction_allocations ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_select_transaction_allocations" ON transaction_allocations; END $$;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_insert_transaction_allocations" ON transaction_allocations; END $$;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_update_transaction_allocations" ON transaction_allocations; END $$;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_delete_transaction_allocations" ON transaction_allocations; END $$;
+CREATE POLICY "anon_select_transaction_allocations" ON transaction_allocations FOR SELECT TO anon USING (true);
+CREATE POLICY "anon_insert_transaction_allocations" ON transaction_allocations FOR INSERT TO anon WITH CHECK (true);
+CREATE POLICY "anon_update_transaction_allocations" ON transaction_allocations FOR UPDATE TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "anon_delete_transaction_allocations" ON transaction_allocations FOR DELETE TO anon USING (true);
+
+-- devices (logged-in device registry)
+ALTER TABLE devices ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_select_devices" ON devices; END $$;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_insert_devices" ON devices; END $$;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_update_devices" ON devices; END $$;
+DO $$ BEGIN DROP POLICY IF EXISTS "anon_delete_devices" ON devices; END $$;
+CREATE POLICY "anon_select_devices" ON devices FOR SELECT TO anon USING (true);
+CREATE POLICY "anon_insert_devices" ON devices FOR INSERT TO anon WITH CHECK (true);
+CREATE POLICY "anon_update_devices" ON devices FOR UPDATE TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "anon_delete_devices" ON devices FOR DELETE TO anon USING (true);

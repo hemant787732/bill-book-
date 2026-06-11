@@ -25,8 +25,11 @@ export const TABLES = [
   'party_transactions',
   'supplier_accounts',
   'supplier_transactions',
+  'supplier_purchase_items',
+  'transaction_allocations',
   'cash_bank_entries',
   'market_runs',
+  'devices',
 ] as const;
 
 type SyncResult = { ok: boolean; message?: string };
@@ -48,6 +51,44 @@ function number(value: any): number {
 function text(value: any): string {
   if (value === null || value === undefined) return '';
   return String(value);
+}
+
+// ---------------------------------------------------------------------------
+// Immediate (event-driven) upload — pushes a local change to Supabase the
+// instant it is written, instead of waiting for the periodic timer. Debounced
+// so the multiple rows of one bill (bill + items + transactions) go up in a
+// single upload. This is what gets a change onto other devices in < 1 second.
+// ---------------------------------------------------------------------------
+let uploadKickTimer: ReturnType<typeof setTimeout> | null = null;
+let uploadInFlight = false;
+let dirtyDuringUpload = false;
+let kickDb: LocalDatabase | null = null;
+
+async function runUploadKick(): Promise<void> {
+  uploadKickTimer = null;
+  if (!kickDb) return;
+  uploadInFlight = true;
+  dirtyDuringUpload = false;
+  try {
+    await uploadPendingChanges(kickDb);
+  } finally {
+    uploadInFlight = false;
+    if (dirtyDuringUpload) scheduleImmediateUpload(kickDb);
+  }
+}
+
+export function scheduleImmediateUpload(db: LocalDatabase): void {
+  if (!supabase) return;
+  kickDb = db;
+  // A change arrived while an upload is running — re-run once it finishes so
+  // nothing is left behind.
+  if (uploadInFlight) {
+    dirtyDuringUpload = true;
+    return;
+  }
+  // Coalesce a burst of writes into one upload (fires ~250ms after the first).
+  if (uploadKickTimer) return;
+  uploadKickTimer = setTimeout(() => { void runUploadKick(); }, 250);
 }
 
 export async function upsertRows(db: LocalDatabase, table: string, rows: Record<string, any>[], conflictKey: string): Promise<void> {
@@ -170,6 +211,7 @@ export function sanitizeRow(table: string, row: any): Record<string, any> {
       r.labour_type = oneOf(text(row.labour_type), LABOUR_TYPES, 'labour_type');
       r.labour = text(row.labour);
       r.amount = text(row.amount);
+      r.supplier_id = text(row.supplier_id);
       r.updated_at = text(row.updated_at);
       r.sync_status = 'synced';
       break;
@@ -237,6 +279,35 @@ export function sanitizeRow(table: string, row: any): Record<string, any> {
       r.bank_amount = number(row.bank_amount);
       r.discount_amount = number(row.discount_amount);
       r.note = text(row.note);
+      r.source_type = text(row.source_type) || 'manual';
+      r.source_bill_id = text(row.source_bill_id);
+      r.created_at = text(row.created_at);
+      r.updated_at = text(row.updated_at);
+      r.sync_status = 'synced';
+      break;
+    case 'supplier_purchase_items':
+      r.id = text(row.id);
+      r.transaction_id = text(row.transaction_id);
+      r.supplier_id = text(row.supplier_id);
+      r.line_no = number(row.line_no);
+      r.item_name = text(row.item_name);
+      r.pcs = text(row.pcs);
+      r.weight = text(row.weight);
+      r.touch = text(row.touch);
+      r.fine = text(row.fine);
+      r.rate = text(row.rate);
+      r.amount = text(row.amount);
+      r.updated_at = text(row.updated_at);
+      r.sync_status = 'synced';
+      break;
+    case 'transaction_allocations':
+      r.id = text(row.id);
+      r.transaction_id = text(row.transaction_id);
+      r.customer_id = text(row.customer_id);
+      r.bill_id = text(row.bill_id);
+      r.bill_no = number(row.bill_no);
+      r.fine_alloc = number(row.fine_alloc);
+      r.amount_alloc = number(row.amount_alloc);
       r.created_at = text(row.created_at);
       r.updated_at = text(row.updated_at);
       r.sync_status = 'synced';
@@ -259,6 +330,21 @@ export function sanitizeRow(table: string, row: any): Record<string, any> {
       r.gold_weight = number(row.gold_weight);
       r.silver_weight = number(row.silver_weight);
       r.note = text(row.note);
+      r.actual_silver_remaining = number(row.actual_silver_remaining);
+      r.actual_gold_remaining = number(row.actual_gold_remaining);
+      r.closed = number(row.closed);
+      r.created_at = text(row.created_at);
+      r.updated_at = text(row.updated_at);
+      r.sync_status = 'synced';
+      break;
+    case 'devices':
+      r.id = text(row.id);
+      r.device_id = text(row.device_id);
+      r.user_email = text(row.user_email);
+      r.device_name = text(row.device_name);
+      r.platform = text(row.platform);
+      r.last_seen = text(row.last_seen);
+      r.revoked = number(row.revoked);
       r.created_at = text(row.created_at);
       r.updated_at = text(row.updated_at);
       r.sync_status = 'synced';

@@ -6,7 +6,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  AppState,
   BackHandler,
+  Image,
   Linking,
   Modal,
   NativeModules,
@@ -25,6 +27,7 @@ import { buildBillHtml } from './src/billHtml';
 import Card from './src/components/Card';
 import { HomeScreen as NewHomeScreen } from './src/screens/NewHome';
 import { SHOP } from './src/config';
+import { SIGNATURE_DATA_URI } from './src/signatureAsset';
 import { DatabaseProvider, useDatabase } from './src/data/dbContext';
 import {
   createBillTransaction,
@@ -55,6 +58,12 @@ import {
   getPartyTransactions,
   getSupplierAccounts,
   getSupplierLedgerSummaries,
+  getFlowLedger,
+  getSupplierPurchaseItems,
+  getPurchasedItemsLedger,
+  getStockItemLedger,
+  getPartyBillBalances,
+  saveSupplier,
   getSupplierTransactions,
   repairMirroredDiscountRows,
   getRecentBills,
@@ -72,27 +81,38 @@ import {
   getReturnsForBill,
   saveJangadReturn,
   deleteJangadReturn,
+  registerDevice,
+  getDevicesForUser,
+  setDeviceRevoked,
+  isDeviceRevoked,
 } from './src/data/database';
 import { restoreFromSupabaseBackup, syncPendingChanges, uploadPendingChanges } from './src/data/sync';
 import { startRealtimeSync, stopRealtimeSync, setRealtimeSyncCallback } from './src/data/realtimeSync';
+import { changePassword, getCurrentSession, getSessionEmail, isAuthEnabled, sendEmailOtp, sendPasswordReset, signInWithEmail, signOutUser, signUpWithEmail, subscribeAuth, verifyEmailOtp, type AuthSession } from './src/data/auth';
+import { clearAppLockPin, isAppLockSet, setAppLockPin, verifyAppLockPin } from './src/data/appLock';
+import { getDeviceId, getDeviceName } from './src/data/device';
 import { languageNames, t, translateNameOrItem } from './src/i18n';
 import {
   AddSupplierScreen as SupplierAddScreen,
+  PurchasedStockScreen,
+  StockItemLedgerScreen,
   SupplierDetailScreen as SupplierLedgerScreen,
   SupplierListScreen,
   SupplierTransactScreen as SupplierEntryScreen,
   type SupplierDraft,
 } from './src/suppliers/supplier';
-import { saveSupplierManualEntry } from './src/suppliers/supplier-sql';
 import type {
   BillItemDraft,
   BillPayload,
+  BillBalance,
   BillReminder,
   BillTransaction,
   BillTransactionMode,
   BillType,
+  Device,
   CashBankEntry,
   CustomerDraft,
+  FlowLedgerSummary,
   ItemNameOption,
   JangadReturnItem,
   JangadReturnVoucher,
@@ -106,9 +126,11 @@ import type {
   PartyLedgerSummary,
   PartyTransaction,
   PartyTransactionMode,
+  PurchaseStockRow,
   Rate,
   ReceiptType,
   RecentBill,
+  StockItemLedger,
   SupplierAccount,
   SupplierLedgerSummary,
   SupplierTransaction,
@@ -144,6 +166,7 @@ type Screen =
   | 'partyTransact'
   | 'suppliers'
   | 'addSupplier'
+  | 'supplierPurchase'
   | 'supplierTransact'
   | 'cashLedger'
   | 'bankLedger'
@@ -153,6 +176,10 @@ type Screen =
   | 'itemNames'
   | 'reminders'
   | 'marketStock'
+  | 'flowLedger'
+  | 'supplierStock'
+  | 'stockItemLedger'
+  | 'settings'
   | 'jangadBook';
 type BillPeriod = 'today' | 'week' | 'month' | 'custom';
 type LedgerPeriod = BillPeriod | 'year';
@@ -179,6 +206,7 @@ type PartyTransactionFormInput = {
   note: string;
   paymentAmount: string;
   transactionDate: string;
+  allocations?: { billId: string; billNo: number; fineAlloc: number; amountAlloc: number }[];
 };
 type SupplierTransactionFormInput = {
   bankAmount: string;
@@ -190,6 +218,7 @@ type SupplierTransactionFormInput = {
   mode: SupplierTransactionMode;
   note: string;
   transactionDate: string;
+  items?: { itemName: string; pcs: string; weight: string; touch: string; fine: string; rate: string; amount: string }[];
 };
 type WebPdfShareFile = {
   file: File;
@@ -1833,12 +1862,218 @@ async function scheduleReminderNotification(reminder: BillReminder) {
   }
 }
 
+function GateShell({ subtitle, children }: { subtitle: string; children: any }) {
+  return (
+    <SafeAreaView edges={['top', 'right', 'bottom', 'left']} style={styles.safeArea}>
+      <StatusBar style="dark" />
+      <ScrollView contentContainerStyle={[styles.page, { justifyContent: 'center', flexGrow: 1 }]} keyboardShouldPersistTaps="handled">
+        <View style={{ alignItems: 'center', marginBottom: 24 }}>
+          <Text style={{ fontSize: 24, fontWeight: '900', color: '#007a66' }}>{SHOP.name}</Text>
+          <Text style={{ color: '#718096', marginTop: 4 }}>{subtitle}</Text>
+        </View>
+        <View style={styles.panel}>{children}</View>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+type GateStep = 'loading' | 'credentials' | 'otp' | 'setPin' | 'lock' | 'app';
+
+// Single sequential access gate.
+//   First time (no session):  email + password -> OTP -> set 4-digit PIN -> app.
+//   Every later open:         session persists, so ONLY the 4-digit PIN.
+// If Supabase isn't configured the app runs without login (local-only).
+function AccessGate({ children }: { children: any }) {
+  const [step, setStep] = useState<GateStep>('loading');
+  const [isSignup, setIsSignup] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [pin, setPin] = useState('');
+  const [pin2, setPin2] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const pinSet = await isAppLockSet();
+      if (!isAuthEnabled()) {
+        if (active) setStep(pinSet ? 'lock' : 'app');
+        return;
+      }
+      const session = await getCurrentSession();
+      if (!active) return;
+      // Session persists across restarts → returning user only sees the PIN.
+      setStep(session ? (pinSet ? 'lock' : 'app') : 'credentials');
+    })();
+    const unsub = subscribeAuth((session) => {
+      if (!session) {
+        // Signed out (e.g. from Settings or a remote device removal).
+        setPassword('');
+        setOtpCode('');
+        setMessage('');
+        setStep('credentials');
+      }
+    });
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      isAppLockSet().then((set) => {
+        // Re-lock when returning from background if a PIN exists.
+        if (set) setStep((s) => (s === 'app' ? 'lock' : s));
+      });
+    });
+    return () => {
+      active = false;
+      unsub();
+      sub.remove();
+    };
+  }, []);
+
+  async function afterAuthenticated() {
+    // OTP verified → set PIN on first run, else straight into the app.
+    const pinSet = await isAppLockSet();
+    setStep(pinSet ? 'app' : 'setPin');
+  }
+
+  async function submitCredentials() {
+    if (!email.trim() || !password) {
+      setMessage('Email aur password dono daalo.');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
+    try {
+      if (isSignup) {
+        const { error, needsConfirm } = await signUpWithEmail(email, password);
+        if (error) { setMessage(error); return; }
+        if (needsConfirm) { setMessage('Account ban gaya. Email confirm karke wapas sign in karo.'); setIsSignup(false); return; }
+      } else {
+        const { error } = await signInWithEmail(email, password);
+        if (error) { setMessage(error); return; }
+      }
+      // Password OK → send the OTP second factor.
+      const { error: otpErr } = await sendEmailOtp(email);
+      setMessage(otpErr ?? '6-digit code email par bheja gaya.');
+      setStep('otp');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitOtp() {
+    if (!otpCode.trim()) { setMessage('Code daalo.'); return; }
+    setBusy(true);
+    setMessage('');
+    try {
+      const { error } = await verifyEmailOtp(email, otpCode);
+      if (error) { setMessage(error); return; }
+      await afterAuthenticated();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitSetPin() {
+    if (pin.length < 4) { setMessage('PIN kam se kam 4 digit ka ho.'); return; }
+    if (pin !== pin2) { setMessage('Dono PIN match nahi kar rahe.'); return; }
+    await setAppLockPin(pin);
+    setPin('');
+    setPin2('');
+    setMessage('');
+    setStep('app');
+  }
+
+  async function submitUnlock() {
+    if (await verifyAppLockPin(pin)) {
+      setPin('');
+      setMessage('');
+      setStep('app');
+    } else {
+      setMessage('Galat PIN. Dobara try karo.');
+    }
+  }
+
+  if (step === 'loading') {
+    return (
+      <SafeAreaView style={[styles.safeArea, { alignItems: 'center', justifyContent: 'center' }]}>
+        <Text style={{ color: '#718096' }}>Loading...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (step === 'credentials') {
+    return (
+      <GateShell subtitle={isSignup ? 'Create your account' : 'Step 1 of 3 — email & password'}>
+        <Field keyboardType="default" label="Email" value={email} onChangeText={setEmail} />
+        <Field label="Password" value={password} onChangeText={setPassword} />
+        {message ? <Text style={{ color: '#c53030', fontSize: 13, marginBottom: 8 }}>{message}</Text> : null}
+        <Pressable disabled={busy} onPress={() => void submitCredentials()} style={[styles.button, busy && styles.disabledButton]}>
+          <Text style={styles.buttonText}>{busy ? 'Please wait...' : isSignup ? 'Create account & continue' : 'Continue'}</Text>
+        </Pressable>
+        <Pressable onPress={() => { setIsSignup(!isSignup); setMessage(''); }} style={{ marginTop: 14, alignItems: 'center' }}>
+          <Text style={{ color: '#007a66', fontWeight: '700' }}>{isSignup ? 'Already have an account? Sign in' : 'New here? Create an account'}</Text>
+        </Pressable>
+      </GateShell>
+    );
+  }
+
+  if (step === 'otp') {
+    return (
+      <GateShell subtitle="Step 2 of 3 — verify OTP">
+        <Field keyboardType="number-pad" label="6-digit code" value={otpCode} onChangeText={setOtpCode} />
+        {message ? <Text style={{ color: '#4a5568', fontSize: 13, marginBottom: 8 }}>{message}</Text> : null}
+        <Pressable disabled={busy} onPress={() => void submitOtp()} style={[styles.button, busy && styles.disabledButton]}>
+          <Text style={styles.buttonText}>{busy ? 'Verifying...' : 'Verify'}</Text>
+        </Pressable>
+        <Pressable onPress={() => void sendEmailOtp(email).then(() => setMessage('Naya code bheja gaya.'))} style={{ marginTop: 12, alignItems: 'center' }}>
+          <Text style={{ color: '#007a66', fontWeight: '700' }}>Resend code</Text>
+        </Pressable>
+      </GateShell>
+    );
+  }
+
+  if (step === 'setPin') {
+    return (
+      <GateShell subtitle="Step 3 of 3 — set app-lock PIN">
+        <Field keyboardType="number-pad" label="New 4-digit PIN" value={pin} onChangeText={setPin} />
+        <Field keyboardType="number-pad" label="Confirm PIN" value={pin2} onChangeText={setPin2} />
+        {message ? <Text style={{ color: '#c53030', fontSize: 13, marginBottom: 8 }}>{message}</Text> : null}
+        <Pressable onPress={() => void submitSetPin()} style={styles.button}>
+          <Text style={styles.buttonText}>Set PIN & open</Text>
+        </Pressable>
+      </GateShell>
+    );
+  }
+
+  if (step === 'lock') {
+    return (
+      <GateShell subtitle="Enter your 4-digit app-lock PIN">
+        <Field keyboardType="number-pad" label="PIN" value={pin} onChangeText={setPin} />
+        {message ? <Text style={{ color: '#c53030', fontSize: 13, marginBottom: 8 }}>{message}</Text> : null}
+        <Pressable onPress={() => void submitUnlock()} style={styles.button}>
+          <Text style={styles.buttonText}>Unlock</Text>
+        </Pressable>
+        {isAuthEnabled() ? (
+          <Pressable onPress={() => void signOutUser()} style={{ marginTop: 12, alignItems: 'center' }}>
+            <Text style={{ color: '#007a66', fontWeight: '700' }}>Forgot PIN? Sign out & log in again</Text>
+          </Pressable>
+        ) : null}
+      </GateShell>
+    );
+  }
+
+  return children;
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
-      <DatabaseProvider>
-        <JewelleryBillBook />
-      </DatabaseProvider>
+      <AccessGate>
+        <DatabaseProvider>
+          <JewelleryBillBook />
+        </DatabaseProvider>
+      </AccessGate>
     </SafeAreaProvider>
   );
 }
@@ -1847,6 +2082,7 @@ function JewelleryBillBook() {
   const db = useDatabase();
   const [screen, setScreenState] = useState<Screen>('home');
   const prevScreenRef = useRef<Screen>('home');
+  const deviceIdRef = useRef<string | null>(null);
   function setScreen(s: Screen) {
     prevScreenRef.current = screen;
     setScreenState(s);
@@ -1895,6 +2131,8 @@ function JewelleryBillBook() {
   const [allPartyTransactions, setAllPartyTransactions] = useState<PartyTransaction[]>([]);
   const [cashBankEntries, setCashBankEntries] = useState<CashBankEntry[]>([]);
   const [supplierAccounts, setSupplierAccounts] = useState<SupplierAccount[]>([]);
+  const [flowLedger, setFlowLedger] = useState<FlowLedgerSummary | null>(null);
+  const [purchaseStockRows, setPurchaseStockRows] = useState<PurchaseStockRow[]>([]);
   const [supplierLedgers, setSupplierLedgers] = useState<SupplierLedgerSummary[]>([]);
   const [allSupplierTransactions, setAllSupplierTransactions] = useState<SupplierTransaction[]>([]);
   const [recentBills, setRecentBills] = useState<RecentBill[]>([]);
@@ -1905,7 +2143,9 @@ function JewelleryBillBook() {
   const [marketStockRows, setMarketStockRows] = useState<MarketStockSummary[]>([]);
   const [marketDate, setMarketDate] = useState(localIsoDate());
   const [marketSilverWeight, setMarketSilverWeight] = useState('');
+  const [marketActualRemaining, setMarketActualRemaining] = useState('');
   const [marketNote, setMarketNote] = useState('');
+  const [isMarketPdfBusy, setIsMarketPdfBusy] = useState(false);
   const [billPeriod, setBillPeriod] = useState<BillPeriod>('today');
   const [customFrom, setCustomFrom] = useState(localIsoDate());
   const [customTo, setCustomTo] = useState(localIsoDate());
@@ -1914,13 +2154,17 @@ function JewelleryBillBook() {
   const [clearCustomTo, setClearCustomTo] = useState(localIsoDate());
   const [selectedPartyId, setSelectedPartyId] = useState<string | null>(null);
   const [selectedPartyTransactions, setSelectedPartyTransactions] = useState<PartyTransaction[]>([]);
+  const [selectedPartyBillBalances, setSelectedPartyBillBalances] = useState<BillBalance[]>([]);
   const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
+  const [supplierStockBackScreen, setSupplierStockBackScreen] = useState<Screen>('home');
+  const [selectedStockItemLedger, setSelectedStockItemLedger] = useState<StockItemLedger | null>(null);
   const [selectedSupplierTransactions, setSelectedSupplierTransactions] = useState<SupplierTransaction[]>([]);
   const [editingBillId, setEditingBillId] = useState<string | null>(null);
   const [viewingBillId, setViewingBillId] = useState<string | null>(null);
   const [viewingBillPayload, setViewingBillPayload] = useState<BillPayload | null>(null);
   const [viewingBillTransactions, setViewingBillTransactions] = useState<BillTransaction[]>([]);
   const [viewingBillReturns, setViewingBillReturns] = useState<(JangadReturnVoucher & { items: JangadReturnItem[] })[]>([]);
+  const [viewingBillBalance, setViewingBillBalance] = useState<BillBalance | null>(null);
   const [billViewBackScreen, setBillViewBackScreen] = useState<Screen>('bills');
   const [backupMessage, setBackupMessage] = useState('');
   const [lastSavedPayload, setLastSavedPayload] = useState<BillPayload | null>(null);
@@ -2113,10 +2357,15 @@ function JewelleryBillBook() {
   async function loadPartyTransactions(customerId: string | null = selectedPartyId) {
     if (!customerId) {
       setSelectedPartyTransactions([]);
+      setSelectedPartyBillBalances([]);
       return [];
     }
-    const transactions = await getPartyTransactions(db, customerId);
+    const [transactions, balances] = await Promise.all([
+      getPartyTransactions(db, customerId),
+      getPartyBillBalances(db, customerId),
+    ]);
     setSelectedPartyTransactions(transactions);
+    setSelectedPartyBillBalances(balances);
     return transactions;
   }
 
@@ -2160,6 +2409,8 @@ function JewelleryBillBook() {
       suppliers,
       supplierLedgerRows,
       supplierTransactions,
+      flow,
+      purchaseStock,
     ] = await Promise.all([
       getLatestRate(db),
       getNextBillNo(db),
@@ -2176,6 +2427,8 @@ function JewelleryBillBook() {
       getSupplierAccounts(db),
       getSupplierLedgerSummaries(db),
       getAllSupplierTransactions(db),
+      getFlowLedger(db),
+      getPurchasedItemsLedger(db),
     ]);
 
     if (rate) {
@@ -2193,6 +2446,8 @@ function JewelleryBillBook() {
     setSupplierAccounts(suppliers);
     setSupplierLedgers(supplierLedgerRows);
     setAllSupplierTransactions(supplierTransactions);
+    setFlowLedger(flow);
+    setPurchaseStockRows(purchaseStock);
     setRecentBills(recent);
     setPartyFolders(folders);
     setPartyLedgers(ledgers);
@@ -2201,9 +2456,17 @@ function JewelleryBillBook() {
     setMarketStockRows(marketRows);
     if (selectedPartyId) {
       setSelectedPartyTransactions(await getPartyTransactions(db, selectedPartyId));
+      setSelectedPartyBillBalances(await getPartyBillBalances(db, selectedPartyId));
     }
     if (selectedSupplierId) {
       setSelectedSupplierTransactions(await getSupplierTransactions(db, selectedSupplierId));
+    }
+    // If this device was removed from another device, sign out now.
+    if (deviceIdRef.current && isAuthEnabled()) {
+      const revoked = await isDeviceRevoked(db, deviceIdRef.current);
+      if (revoked) {
+        await signOutUser();
+      }
     }
   }
 
@@ -2234,8 +2497,18 @@ function JewelleryBillBook() {
       return true;
     }
 
-    if (screen === 'addSupplier' || screen === 'supplierTransact') {
+    if (screen === 'addSupplier' || screen === 'supplierTransact' || screen === 'supplierPurchase') {
       setScreen('suppliers');
+      return true;
+    }
+
+    if (screen === 'stockItemLedger') {
+      setScreen('supplierStock');
+      return true;
+    }
+
+    if (screen === 'supplierStock') {
+      setScreen(supplierStockBackScreen);
       return true;
     }
 
@@ -2296,6 +2569,29 @@ function JewelleryBillBook() {
       mounted = false;
       stopRealtimeSync();
     };
+  }, [db]);
+
+  // Register this device for the signed-in user, and sign out if it has been
+  // revoked from another device (checked on app foreground).
+  useEffect(() => {
+    if (!isAuthEnabled()) return undefined;
+    (async () => {
+      const session = await getCurrentSession();
+      const email = getSessionEmail(session);
+      if (!email) return;
+      const id = await getDeviceId();
+      deviceIdRef.current = id;
+      await registerDevice(db, { deviceId: id, userEmail: email, deviceName: getDeviceName(), platform: Platform.OS });
+      void triggerBackgroundUpload();
+    })();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && deviceIdRef.current) {
+        isDeviceRevoked(db, deviceIdRef.current).then((revoked) => {
+          if (revoked) void signOutUser();
+        });
+      }
+    });
+    return () => sub.remove();
   }, [db]);
 
   useEffect(() => {
@@ -2837,18 +3133,16 @@ function JewelleryBillBook() {
     }
 
     try {
-      const supplier = await saveSupplierManualEntry(db, {
-        id: createId(),
+      // Persist to the supplier_accounts table (the prior stub never wrote to
+      // the DB, so saved suppliers vanished on refresh and never synced).
+      const supplier = await saveSupplier(db, {
         entryDate: dateInputToIso(draft.entryDate),
         name: draft.name,
         mobile: draft.mobile,
         address: draft.address,
-        openingFinePayable: parseAmount(draft.openingFinePayable),
-        openingAmountPayable: parseAmount(draft.openingAmountPayable),
+        openingFinePayable: draft.openingFinePayable,
+        openingAmountPayable: draft.openingAmountPayable,
         openingNote: draft.openingNote,
-        createdAt: '',
-        updatedAt: '',
-        syncStatus: 'pending' as SyncStatus,
       });
       setSupplierAccounts((current) => {
         const next = current.filter((entry) => entry.id !== supplier.id);
@@ -2909,9 +3203,9 @@ function JewelleryBillBook() {
     const cashAmount = input.mode === 'cash_payment' || input.mode === 'split_payment' ? parseAmount(input.cashAmount) : 0;
     const bankAmount = input.mode === 'bank_payment' || input.mode === 'split_payment' ? parseAmount(input.bankAmount) : 0;
     const fineWeight = input.mode === 'purchase' || input.mode === 'metal_paid' ? parseAmount(input.fineWeight) : 0;
-    const discountValue = parseAmount(input.discountAmount);
+    const discountValue = input.mode === 'discount' ? parseAmount(input.discountAmount) : 0;
 
-    if (cashAmount <= 0 && bankAmount <= 0 && fineWeight <= 0) {
+    if (cashAmount <= 0 && bankAmount <= 0 && fineWeight <= 0 && discountValue <= 0) {
       Alert.alert('Entry required', 'Cash, bank ya metal me value daalo.');
       return false;
     }
@@ -2928,6 +3222,7 @@ function JewelleryBillBook() {
         note: input.note,
         supplierId: supplier.id,
         transactionDate: dateInputToIso(input.transactionDate),
+        items: input.items,
       });
       await refreshScreen();
       await loadSupplierTransactions(supplier.id);
@@ -2945,10 +3240,32 @@ function JewelleryBillBook() {
     }
   }
 
+  async function handleShareSupplierVoucher(transaction: SupplierTransaction) {
+    try {
+      const supplier = supplierAccounts.find((s) => s.id === transaction.supplierId) ?? null;
+      const items = transaction.mode === 'purchase' ? await getSupplierPurchaseItems(db, transaction.id) : [];
+      const html = buildSupplierVoucherHtml(transaction, supplier, items);
+      const { uri } = await Print.printToFileAsync({ html });
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(uri, {
+          UTI: 'com.adobe.pdf',
+          dialogTitle: `Voucher #${transaction.voucherNo}`,
+          mimeType: 'application/pdf',
+        });
+      } else {
+        Alert.alert('PDF ready', uri);
+      }
+    } catch (error) {
+      Alert.alert('PDF failed', error instanceof Error ? error.message : 'Unable to generate voucher PDF.');
+    }
+  }
+
   async function handleSaveCashBankEntry(input: {
     entryDate: string;
     mode: LedgerMode;
     particular: string;
+    party?: string;
     paymentAmount: string;
     receiptAmount: string;
   }) {
@@ -2957,7 +3274,7 @@ function JewelleryBillBook() {
         entryDate: dateInputToIso(input.entryDate),
         mode: input.mode,
         particular: input.particular,
-        party: 'Manual',
+        party: input.party?.trim() || 'Manual',
         paymentAmount: input.paymentAmount,
         receiptAmount: input.receiptAmount,
       });
@@ -3081,6 +3398,7 @@ function JewelleryBillBook() {
         note: input.note,
         paymentAmount,
         transactionDate: dateInputToIso(input.transactionDate),
+        allocations: input.allocations,
       });
       void triggerBackgroundUpload();
       await refreshScreen();
@@ -3321,6 +3639,13 @@ function JewelleryBillBook() {
     setViewingBillPayload(payload);
     setViewingBillTransactions(transactions);
     setLastSavedPayload(payload);
+    const custId = payload.customer.id;
+    if (custId) {
+      const balances = await getPartyBillBalances(db, custId);
+      setViewingBillBalance(balances.find((b) => b.billId === id) ?? null);
+    } else {
+      setViewingBillBalance(null);
+    }
     if (payload.billType === 'jangad') {
       getReturnsForBill(db, id).then(setViewingBillReturns);
     } else {
@@ -3533,18 +3858,50 @@ function JewelleryBillBook() {
     try {
       const cleanMarketDate = dateInputToIso(marketDate);
       const existingRun = marketStockRows.find((row) => row.runDate === cleanMarketDate);
+      const hasActual = marketActualRemaining.trim().length > 0;
       await upsertMarketRun(db, {
         silverWeight: marketSilverWeight.trim() ? parseAmount(marketSilverWeight) * 1000 : existingRun?.silverWeight ?? 0,
         note: marketNote.trim() || existingRun?.note || '',
         runDate: cleanMarketDate,
+        // Entering an actual remaining count closes/reconciles the day.
+        ...(hasActual ? { actualSilverRemaining: parseAmount(marketActualRemaining) * 1000, closed: true } : {}),
       });
       void triggerBackgroundUpload();
       await refreshScreen();
       setMarketSilverWeight('');
+      setMarketActualRemaining('');
       setMarketNote('');
       setSyncMessage('Market stock saved. Background sync active.');
     } catch (error) {
       Alert.alert('Market stock failed', error instanceof Error ? error.message : 'Market stock save nahi hua.');
+    }
+  }
+
+  async function handleShareMarketStockPdf() {
+    setIsMarketPdfBusy(true);
+    try {
+      const html = buildMarketStockHtml(marketStockRows);
+      const { uri } = await Print.printToFileAsync({ html });
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(uri, { UTI: 'com.adobe.pdf', dialogTitle: 'Market stock reconciliation', mimeType: 'application/pdf' });
+      } else {
+        Alert.alert('PDF ready', uri);
+      }
+    } catch (error) {
+      Alert.alert('PDF failed', error instanceof Error ? error.message : 'Unable to generate PDF.');
+    } finally {
+      setIsMarketPdfBusy(false);
+    }
+  }
+
+  async function handleOpenStockItemLedger(row: PurchaseStockRow) {
+    try {
+      const ledger = await getStockItemLedger(db, row.supplierId, row.itemName);
+      setSelectedStockItemLedger(ledger);
+      setScreen('stockItemLedger');
+    } catch (error) {
+      Alert.alert('Stock ledger failed', error instanceof Error ? error.message : 'Item ledger open nahi hua.');
     }
   }
 
@@ -3565,7 +3922,16 @@ function JewelleryBillBook() {
           onSuppliers={() => setScreen('suppliers')}
           onCashLedger={() => setScreen('cashLedger')}
           onBankLedger={() => setScreen('bankLedger')}
+          onFlowLedger={() => setScreen('flowLedger')}
+          onMarketStock={() => setScreen('marketStock')}
+          onStockLedger={() => {
+            setSupplierStockBackScreen('home');
+            setScreen('supplierStock');
+          }}
+          onSettings={() => setScreen('settings')}
+          marketStockRows={marketStockRows}
           partyLedgers={partyLedgers}
+          purchaseStockRows={purchaseStockRows}
         />
       ) : null}
       {screen === 'rates' ? (
@@ -3622,6 +3988,7 @@ function JewelleryBillBook() {
       ) : null}
       {screen === 'partyTransact' && selectedPartyFolder ? (
         <PartyTransactScreen
+          billBalances={selectedPartyBillBalances}
           onBack={() => setScreen('partyVouchers')}
           onSavePartyTransaction={handleSavePartyTransaction}
           onShareVoucher={handleSharePartyVoucher}
@@ -3638,7 +4005,9 @@ function JewelleryBillBook() {
               setSelectedSupplierId(null);
               setSelectedSupplierTransactions([]);
             }}
+            onOpenPurchase={() => setScreen('supplierPurchase')}
             onOpenTransact={() => setScreen('supplierTransact')}
+            onShareVoucher={handleShareSupplierVoucher}
             supplier={selectedSupplier}
             transactions={selectedSupplierTransactions}
           />
@@ -3648,9 +4017,29 @@ function JewelleryBillBook() {
             onAddSupplier={() => setScreen('addSupplier')}
             onBack={() => setScreen('home')}
             onOpenSupplier={(id) => void openSupplier(id)}
+            onOpenStock={() => {
+              setSupplierStockBackScreen('suppliers');
+              setScreen('supplierStock');
+            }}
             suppliers={supplierAccounts}
           />
         )
+      ) : null}
+      {screen === 'supplierStock' ? (
+        <PurchasedStockScreen rows={purchaseStockRows} onBack={() => setScreen(supplierStockBackScreen)} onOpenItem={handleOpenStockItemLedger} />
+      ) : null}
+      {screen === 'stockItemLedger' ? (
+        <StockItemLedgerScreen ledger={selectedStockItemLedger} onBack={() => setScreen('supplierStock')} />
+      ) : null}
+      {screen === 'supplierPurchase' && selectedSupplier ? (
+        <SupplierPurchaseScreen
+          itemNameOptions={itemNameOptions}
+          onBack={() => setScreen('suppliers')}
+          onCreateItemName={handleCreateItemName}
+          onSavePurchase={handleSaveSupplierTransaction}
+          rates={rates}
+          supplier={selectedSupplier}
+        />
       ) : null}
       {screen === 'addSupplier' ? (
         <SupplierAddScreen
@@ -3663,6 +4052,7 @@ function JewelleryBillBook() {
           ledger={selectedSupplierLedger}
           onBack={() => setScreen('suppliers')}
           onSaveSupplierTransaction={handleSaveSupplierTransaction}
+          onShareVoucher={handleShareSupplierVoucher}
           supplier={selectedSupplier}
           transactions={selectedSupplierTransactions}
         />
@@ -3694,6 +4084,12 @@ function JewelleryBillBook() {
           supplierAccounts={supplierAccounts}
           supplierTransactions={allSupplierTransactions}
         />
+      ) : null}
+      {screen === 'flowLedger' ? (
+        <FlowLedgerScreen flow={flowLedger} onBack={() => setScreen('home')} />
+      ) : null}
+      {screen === 'settings' ? (
+        <SettingsScreen onBack={() => setScreen('home')} />
       ) : null}
       {screen === 'bills' ? (
         <BillsScreen
@@ -3744,13 +4140,17 @@ function JewelleryBillBook() {
         <MarketStockScreen
           marketDate={marketDate}
           marketSilverWeight={marketSilverWeight}
+          marketActualRemaining={marketActualRemaining}
           marketNote={marketNote}
           rows={marketStockRows}
+          isPdfBusy={isMarketPdfBusy}
           onBack={() => setScreen('home')}
           onDateChange={setMarketDate}
           onNoteChange={setMarketNote}
           onSave={handleSaveMarketRun}
           onSilverWeightChange={setMarketSilverWeight}
+          onActualRemainingChange={setMarketActualRemaining}
+          onSharePdf={handleShareMarketStockPdf}
         />
       ) : null}
       {screen === 'jangadBook' ? (
@@ -3780,6 +4180,7 @@ function JewelleryBillBook() {
           payload={viewingBillPayload}
           transactions={viewingBillTransactions}
           returns={viewingBillReturns}
+          billBalance={viewingBillBalance}
           onBack={() => setScreen(billViewBackScreen)}
           onEditBill={handleEditBill}
           onSaveTransaction={handleSaveBillTransaction}
@@ -3809,6 +4210,7 @@ function JewelleryBillBook() {
           
           isSaving={isSaving}
           itemNameOptions={itemNameOptions}
+          supplierAccounts={supplierAccounts}
           language={language}
           lastSavedPayload={lastSavedPayload}
           onAddItem={() => setItems((current) => [...current, emptyItem(current[current.length - 1]?.material ?? 'silver')])}
@@ -4554,6 +4956,7 @@ function PartyVouchersScreen({
 }
 
 function PartyTransactScreen({
+  billBalances,
   onBack,
   onSavePartyTransaction,
   onShareVoucher,
@@ -4561,6 +4964,7 @@ function PartyTransactScreen({
   partyLedger,
   transactions,
 }: {
+  billBalances: BillBalance[];
   onBack: () => void;
   onSavePartyTransaction: (input: PartyTransactionFormInput) => Promise<PartyTransaction | false>;
   onShareVoucher: (transaction: PartyTransaction, target: 'customer' | 'pdf') => void;
@@ -4574,39 +4978,93 @@ function PartyTransactScreen({
   const [transactionCash, setTransactionCash] = useState('');
   const [transactionBank, setTransactionBank] = useState('');
   const [transactionFine, setTransactionFine] = useState('');
+  const [transactionGross, setTransactionGross] = useState('');
+  const [transactionTouch, setTransactionTouch] = useState('');
   const [transactionBookedRate, setTransactionBookedRate] = useState('');
   const [transactionPayment, setTransactionPayment] = useState('');
   const [transactionDiscount, setTransactionDiscount] = useState('');
   const [transactionNote, setTransactionNote] = useState('');
   const [selectedVoucher, setSelectedVoucher] = useState<PartyTransaction | null>(null);
   const [isSavingTransaction, setIsSavingTransaction] = useState(false);
-  const metalValue = useMemo(
-    () => fineValueFromBookedRate(transactionMaterial, transactionFine, transactionBookedRate),
-    [transactionBookedRate, transactionFine, transactionMaterial],
+  const [allocMode, setAllocMode] = useState<'none' | 'auto' | 'manual'>('none');
+  const [selectedBillIds, setSelectedBillIds] = useState<string[]>([]);
+  const [manualAlloc, setManualAlloc] = useState<Record<string, { fine: string; amount: string }>>({});
+  // When a gross weight is entered, fine is derived from gw × touch (blank touch
+  // counts as 100%); otherwise the fine field is entered directly.
+  const effectiveFine = useMemo(
+    () => (transactionGross.trim() ? formatPlainNumber(calculateReceivedFine(transactionGross, transactionTouch)) : transactionFine),
+    [transactionGross, transactionTouch, transactionFine],
   );
+  const metalValue = useMemo(
+    () => fineValueFromBookedRate(transactionMaterial, effectiveFine, transactionBookedRate),
+    [transactionBookedRate, effectiveFine, transactionMaterial],
+  );
+
+  // Bills with something still outstanding, oldest order-no first (already sorted).
+  const openBills = useMemo(
+    () => billBalances.filter((b) => b.fineOutstanding > 0.001 || b.amountOutstanding > 0.01),
+    [billBalances],
+  );
+  const fineAvailable = parseAmount(effectiveFine);
+  const cashAvailable = parseAmount(transactionCash) + parseAmount(transactionBank) + parseAmount(transactionPayment);
+
+  // Allocations across the selected bills: auto fills fine then cash oldest-first
+  // up to each bill's outstanding; manual uses the per-bill amounts entered.
+  const computedAllocations = useMemo(() => {
+    if (allocMode === 'none' || !selectedBillIds.length) return [];
+    const selected = openBills.filter((b) => selectedBillIds.includes(b.billId));
+    if (allocMode === 'manual') {
+      return selected.map((b) => ({
+        billId: b.billId,
+        billNo: b.billNo,
+        fineAlloc: parseAmount(manualAlloc[b.billId]?.fine),
+        amountAlloc: parseAmount(manualAlloc[b.billId]?.amount),
+      }));
+    }
+    let fineLeft = fineAvailable;
+    let cashLeft = cashAvailable;
+    return selected.map((b) => {
+      const fineAlloc = Math.max(Math.min(fineLeft, b.fineOutstanding), 0);
+      fineLeft -= fineAlloc;
+      const amountAlloc = Math.max(Math.min(cashLeft, b.amountOutstanding), 0);
+      cashLeft -= amountAlloc;
+      return { billId: b.billId, billNo: b.billNo, fineAlloc, amountAlloc };
+    });
+  }, [allocMode, selectedBillIds, openBills, manualAlloc, fineAvailable, cashAvailable]);
+
+  function toggleBill(billId: string) {
+    setSelectedBillIds((ids) => (ids.includes(billId) ? ids.filter((id) => id !== billId) : [...ids, billId]));
+  }
 
   async function submitPartyTransaction() {
     setIsSavingTransaction(true);
     try {
+      const allocations = computedAllocations.filter((a) => a.fineAlloc > 0 || a.amountAlloc > 0);
       const saved = await onSavePartyTransaction({
         bankAmount: transactionBank,
         bookedRate: transactionBookedRate,
         cashAmount: transactionCash,
         discountAmount: transactionDiscount,
-        fineWeight: transactionFine,
+        fineWeight: effectiveFine,
         material: transactionMaterial,
         mode: transactionMode,
         note: transactionNote,
         paymentAmount: transactionPayment,
         transactionDate,
+        allocations,
       });
       if (saved) {
         setTransactionCash('');
         setTransactionBank('');
         setTransactionFine('');
+        setTransactionGross('');
+        setTransactionTouch('');
         setTransactionPayment('');
         setTransactionDiscount('');
         setTransactionNote('');
+        setAllocMode('none');
+        setSelectedBillIds([]);
+        setManualAlloc({});
         onShareVoucher(saved, 'pdf');
       }
     } finally {
@@ -4678,7 +5136,9 @@ function PartyTransactScreen({
                 <Text style={styles.fieldLabel}>Metal</Text>
                 <MetalSelector material={transactionMaterial} onChange={setTransactionMaterial} />
               </View>
-              <Field keyboardType="decimal-pad" label="Fine received (gm)" selectTextOnFocus value={transactionFine} onChangeText={setTransactionFine} />
+              <Field keyboardType="decimal-pad" label="Gross weight (gm)" selectTextOnFocus value={transactionGross} onChangeText={setTransactionGross} />
+              <Field keyboardType="decimal-pad" label="Touch %" placeholder="100" selectTextOnFocus value={transactionTouch} onChangeText={setTransactionTouch} />
+              <Field keyboardType="decimal-pad" label="Fine received (gm)" editable={!transactionGross.trim()} selectTextOnFocus value={transactionGross.trim() ? effectiveFine : transactionFine} onChangeText={setTransactionFine} />
               <Field
                 keyboardType="decimal-pad"
                 label={`Booked rate (${partyTransactionMetalRateLabel({ material: transactionMaterial })})`}
@@ -4696,7 +5156,9 @@ function PartyTransactScreen({
                 <Text style={styles.fieldLabel}>Metal</Text>
                 <MetalSelector material={transactionMaterial} onChange={setTransactionMaterial} />
               </View>
-              <Field keyboardType="decimal-pad" label="Fine received (gm)" selectTextOnFocus value={transactionFine} onChangeText={setTransactionFine} />
+              <Field keyboardType="decimal-pad" label="Gross weight (gm)" selectTextOnFocus value={transactionGross} onChangeText={setTransactionGross} />
+              <Field keyboardType="decimal-pad" label="Touch %" placeholder="100" selectTextOnFocus value={transactionTouch} onChangeText={setTransactionTouch} />
+              <Field keyboardType="decimal-pad" label="Fine received (gm)" editable={!transactionGross.trim()} selectTextOnFocus value={transactionGross.trim() ? effectiveFine : transactionFine} onChangeText={setTransactionFine} />
             </>
           ) : null}
           {transactionMode !== 'fine_rec' ? (
@@ -4704,6 +5166,60 @@ function PartyTransactScreen({
           ) : null}
           <Field label="Narration" multiline value={transactionNote} onChangeText={setTransactionNote} />
         </View>
+        {openBills.length ? (
+          <View style={{ marginTop: 4, borderTopWidth: 1, borderTopColor: '#edf2f7', paddingTop: 12 }}>
+            <Text style={styles.fieldLabel}>Allocate to bills (optional)</Text>
+            <View style={{ marginTop: 6 }}>
+              <Segment
+                options={[
+                  { label: 'None', value: 'none' },
+                  { label: 'Auto (order-wise)', value: 'auto' },
+                  { label: 'Manual', value: 'manual' },
+                ]}
+                value={allocMode}
+                wrap
+                onChange={setAllocMode}
+              />
+            </View>
+            {allocMode === 'auto' ? (
+              <Text style={{ color: '#718096', fontSize: 12, marginTop: 8 }}>
+                Fine {formatPlainNumber(fineAvailable) || '0'} g & cash {formatMoney(cashAvailable)} oldest bill se fill ho rahe hain.
+              </Text>
+            ) : null}
+            {allocMode !== 'none'
+              ? openBills.map((b) => {
+                  const selected = selectedBillIds.includes(b.billId);
+                  const alloc = computedAllocations.find((a) => a.billId === b.billId);
+                  return (
+                    <View key={b.billId} style={{ borderWidth: 1, borderColor: selected ? '#007a66' : '#e2e8f0', borderRadius: 8, padding: 10, marginTop: 8 }}>
+                      <Pressable onPress={() => toggleBill(b.billId)} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Text style={{ fontWeight: '700', color: '#2d3748' }}>{selected ? '☑' : '☐'} Bill #{b.billNo}</Text>
+                        <Text style={{ color: '#718096', fontSize: 12 }}>{formatDateForBill(b.billDate)}</Text>
+                      </Pressable>
+                      <Text style={{ color: '#718096', fontSize: 12, marginTop: 4 }}>
+                        Outstanding: {formatPlainNumber(b.fineOutstanding) || '0'} g · {formatMoney(b.amountOutstanding)}
+                      </Text>
+                      {selected && allocMode === 'manual' ? (
+                        <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+                          <View style={{ flex: 1 }}>
+                            <Field keyboardType="decimal-pad" label="Fine alloc" value={manualAlloc[b.billId]?.fine ?? ''} onChangeText={(v) => setManualAlloc((m) => ({ ...m, [b.billId]: { fine: v, amount: m[b.billId]?.amount ?? '' } }))} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Field keyboardType="decimal-pad" label="Amount alloc" value={manualAlloc[b.billId]?.amount ?? ''} onChangeText={(v) => setManualAlloc((m) => ({ ...m, [b.billId]: { amount: v, fine: m[b.billId]?.fine ?? '' } }))} />
+                          </View>
+                        </View>
+                      ) : null}
+                      {selected && allocMode === 'auto' && alloc && (alloc.fineAlloc > 0 || alloc.amountAlloc > 0) ? (
+                        <Text style={{ color: '#007a66', fontSize: 12, marginTop: 4, fontWeight: '700' }}>
+                          Allocating: {formatPlainNumber(alloc.fineAlloc) || '0'} g · {formatMoney(alloc.amountAlloc)}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })
+              : null}
+          </View>
+        ) : null}
         <Pressable disabled={isSavingTransaction} onPress={submitPartyTransaction} style={[styles.button, isSavingTransaction && styles.disabledButton]}>
           <Text style={styles.buttonText}>{isSavingTransaction ? 'Saving transaction...' : 'Save transaction + receipt PDF'}</Text>
         </Pressable>
@@ -4780,6 +5296,105 @@ function partyShortForm(name: string) {
   return parts.map((p) => p[0]).join('').toUpperCase().slice(0, 3);
 }
 
+function buildMarketStockHtml(rows: MarketStockSummary[]): string {
+  const g = (n: number) => `${(Number(n) || 0).toFixed(2)} g`;
+  const body = rows
+    .map((r) => {
+      const varColor = r.silverVariance > 0.001 ? '#c53030' : r.silverVariance < -0.001 ? '#2f855a' : '#444';
+      return `<tr>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:center">${formatDateForBill(r.runDate)}</td>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:right">${g(r.silverWeight)}</td>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:right">${g(r.silverSold)}</td>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:right">${g(r.silverRemaining)}</td>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:right">${r.closed ? g(r.actualSilverRemaining) : '-'}</td>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:right;color:${varColor}">${r.closed ? g(r.silverVariance) : '-'}</td>
+      </tr>`;
+    })
+    .join('');
+  return `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+    <body style="font-family:Arial,sans-serif;padding:18px;color:#222">
+      <div style="text-align:center;border-bottom:2px solid #007a66;padding-bottom:8px;margin-bottom:12px">
+        <div style="font-size:20px;font-weight:800;color:#007a66">${SHOP.name}</div>
+        <div style="font-size:13px;letter-spacing:2px;color:#444;margin-top:4px">MARKET STOCK RECONCILIATION</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#f0ede6">
+          <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">Date</th>
+          <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">Taken</th>
+          <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">Sold</th>
+          <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">Expected</th>
+          <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">Actual</th>
+          <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">Variance</th>
+        </tr></thead>
+        <tbody>${body || '<tr><td colspan="6" style="padding:10px;text-align:center;color:#888">No market runs.</td></tr>'}</tbody>
+      </table>
+      <div style="margin-top:10px;font-size:10px;color:#888">Variance = Expected − Actual. Positive = short/missing, negative = extra. Silver in grams.</div>
+      <div style="margin-top:24px;font-size:10px;color:#999;text-align:center">Generated by ${SHOP.name} billing app</div>
+    </body></html>`;
+}
+
+function buildSupplierVoucherHtml(
+  transaction: SupplierTransaction,
+  supplier: SupplierAccount | null,
+  items: { itemName: string; pcs: string; weight: string; touch: string; fine: string; amount: string }[],
+): string {
+  const isPurchase = transaction.mode === 'purchase';
+  const title = isPurchase ? 'PURCHASE VOUCHER' : 'PAYMENT VOUCHER';
+  const cashBank = transaction.cashAmount + transaction.bankAmount;
+  const itemRows = items
+    .map(
+      (item, idx) => `<tr>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:center">${idx + 1}</td>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px">${item.itemName || '-'}</td>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:right">${parseAmount(item.pcs) || '-'}</td>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:right">${item.weight || '-'}</td>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:right">${item.touch || '100'}</td>
+        <td style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:right">${item.fine || '-'}</td>
+      </tr>`,
+    )
+    .join('');
+  const itemsTable = isPurchase && items.length
+    ? `<table style="width:100%;border-collapse:collapse;margin-top:12px">
+         <thead><tr style="background:#f0ede6">
+           <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">#</th>
+           <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px;text-align:left">Item</th>
+           <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">Pcs</th>
+           <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">Gross</th>
+           <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">Touch</th>
+           <th style="border:1px solid #ccc;padding:5px 7px;font-size:11px">Fine</th>
+         </tr></thead>
+         <tbody>${itemRows}</tbody>
+       </table>`
+    : '';
+  const moneyRows = [
+    transaction.fineWeight > 0 ? `<tr><td style="padding:3px 0;color:#555">Fine</td><td style="padding:3px 0;text-align:right;font-weight:700">${transaction.fineWeight.toFixed(3)} gm</td></tr>` : '',
+    transaction.bookedRate > 0 ? `<tr><td style="padding:3px 0;color:#555">Booked rate</td><td style="padding:3px 0;text-align:right">${formatMoney(transaction.bookedRate)}</td></tr>` : '',
+    transaction.cashAmount > 0 ? `<tr><td style="padding:3px 0;color:#555">Cash</td><td style="padding:3px 0;text-align:right">${formatMoney(transaction.cashAmount)}</td></tr>` : '',
+    transaction.bankAmount > 0 ? `<tr><td style="padding:3px 0;color:#555">Bank</td><td style="padding:3px 0;text-align:right">${formatMoney(transaction.bankAmount)}</td></tr>` : '',
+    transaction.discountAmount > 0 ? `<tr><td style="padding:3px 0;color:#555">Discount</td><td style="padding:3px 0;text-align:right">${formatMoney(transaction.discountAmount)}</td></tr>` : '',
+    isPurchase && transaction.fineValue > 0 ? `<tr><td style="padding:3px 0;color:#555">Purchase amount</td><td style="padding:3px 0;text-align:right;font-weight:700">${formatMoney(transaction.fineValue)}</td></tr>` : '',
+    !isPurchase && cashBank > 0 ? `<tr><td style="padding:3px 0;color:#555">Total paid</td><td style="padding:3px 0;text-align:right;font-weight:700">${formatMoney(cashBank)}</td></tr>` : '',
+  ].join('');
+
+  return `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+    <body style="font-family:Arial,sans-serif;padding:18px;color:#222">
+      <div style="text-align:center;border-bottom:2px solid #007a66;padding-bottom:8px;margin-bottom:12px">
+        <div style="font-size:20px;font-weight:800;color:#007a66">${SHOP.name}</div>
+        <div style="font-size:13px;letter-spacing:2px;color:#444;margin-top:4px">${title}</div>
+      </div>
+      <table style="width:100%;font-size:12px;margin-bottom:8px">
+        <tr><td style="color:#555">Voucher No</td><td style="text-align:right;font-weight:700">#${transaction.voucherNo}</td></tr>
+        <tr><td style="color:#555">Date</td><td style="text-align:right">${formatDateForBill(transaction.transactionDate)}</td></tr>
+        <tr><td style="color:#555">Supplier</td><td style="text-align:right;font-weight:700">${supplier?.name ?? 'Supplier'}</td></tr>
+        ${supplier?.mobile ? `<tr><td style="color:#555">Mobile</td><td style="text-align:right">${supplier.mobile}</td></tr>` : ''}
+      </table>
+      ${itemsTable}
+      <table style="width:100%;font-size:12px;margin-top:14px;border-top:1px solid #ddd;padding-top:8px">${moneyRows}</table>
+      ${transaction.note ? `<div style="margin-top:12px;font-size:11px;color:#666">Note: ${transaction.note}</div>` : ''}
+      <div style="margin-top:28px;font-size:10px;color:#999;text-align:center">Generated by ${SHOP.name} billing app</div>
+    </body></html>`;
+}
+
 async function generateLedgerPdfHtml(ledgerType: string, ledgerRows: (CashBankLedgerEntry & { balance: number })[], openingBalance: string, receiptTotal: number, paymentTotal: number, closing: number) {
   const rows = ledgerRows.map(
     (r) =>
@@ -4832,6 +5447,7 @@ function CashBankLedgerScreen({
     entryDate: string;
     mode: LedgerMode;
     particular: string;
+    party?: string;
     paymentAmount: string;
     receiptAmount: string;
   }) => Promise<boolean>;
@@ -4841,6 +5457,13 @@ function CashBankLedgerScreen({
   supplierTransactions: SupplierTransaction[];
 }) {
   const [period, setPeriod] = useState<LedgerPeriod>('month');
+  const [showEntryForm, setShowEntryForm] = useState(false);
+  const [entryType, setEntryType] = useState<'receipt' | 'payment'>('receipt');
+  const [entryDate, setEntryDate] = useState(localIsoDate());
+  const [entryParticular, setEntryParticular] = useState('');
+  const [entryParty, setEntryParty] = useState('');
+  const [entryAmount, setEntryAmount] = useState('');
+  const [isSavingEntry, setIsSavingEntry] = useState(false);
   const [customFrom, setCustomFrom] = useState(localIsoDate());
   const [customTo, setCustomTo] = useState(localIsoDate());
   const [openingBalance, setOpeningBalance] = useState('');
@@ -4887,6 +5510,32 @@ function CashBankLedgerScreen({
     [ledgerRows, search],
   );
 
+  async function submitManualEntry() {
+    if (parseAmount(entryAmount) <= 0) {
+      Alert.alert('Amount required', 'Receipt ya payment amount daalo.');
+      return;
+    }
+    setIsSavingEntry(true);
+    try {
+      const ok = await onSaveCashBankEntry({
+        entryDate,
+        mode: ledgerType,
+        particular: entryParticular,
+        party: entryParty,
+        paymentAmount: entryType === 'payment' ? entryAmount : '',
+        receiptAmount: entryType === 'receipt' ? entryAmount : '',
+      });
+      if (ok) {
+        setEntryParticular('');
+        setEntryParty('');
+        setEntryAmount('');
+        setShowEntryForm(false);
+      }
+    } finally {
+      setIsSavingEntry(false);
+    }
+  }
+
   async function handleShareLedgerPdf() {
     setIsGeneratingPdf(true);
     try {
@@ -4932,10 +5581,37 @@ function CashBankLedgerScreen({
         {showOpeningInput ? <Field keyboardType="decimal-pad" label="Opening balance" selectTextOnFocus value={openingBalance} onChangeText={setOpeningBalance} /> : null}
         <View style={styles.summaryGrid}>
           <SummaryTile label="Opening" value={formatMoney(parseAmount(openingBalance))} />
-          <SummaryTile label="Receipt" value={formatMoney(receiptTotal)} />
-          <SummaryTile label="Payment" value={formatMoney(paymentTotal)} />
+          <SummaryTile label="Receipt (Dr)" value={formatMoney(receiptTotal)} />
+          <SummaryTile label="Payment (Cr)" value={formatMoney(paymentTotal)} />
           <SummaryTile label="Closing" value={formatMoney(closing)} />
         </View>
+      </View>
+      <View style={styles.panel}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Text style={styles.fieldLabel}>Manual {ledgerType} entry</Text>
+          <Pressable onPress={() => setShowEntryForm((v) => !v)}>
+            <Text style={{ color: '#007a66', fontWeight: '900', fontSize: 12 }}>{showEntryForm ? 'Close' : '+ Add entry'}</Text>
+          </Pressable>
+        </View>
+        {showEntryForm ? (
+          <View style={{ marginTop: 10, gap: 10 }}>
+            <Segment
+              options={[
+                { label: 'Receipt (Dr)', value: 'receipt' },
+                { label: 'Payment (Cr)', value: 'payment' },
+              ]}
+              value={entryType}
+              onChange={setEntryType}
+            />
+            <DateField label="Date" value={entryDate} onChangeText={setEntryDate} />
+            <Field label="Particular" value={entryParticular} onChangeText={setEntryParticular} />
+            <Field label="Party / contra (optional)" value={entryParty} onChangeText={setEntryParty} />
+            <Field keyboardType="decimal-pad" label={entryType === 'receipt' ? 'Receipt amount' : 'Payment amount'} selectTextOnFocus value={entryAmount} onChangeText={setEntryAmount} />
+            <Pressable disabled={isSavingEntry} onPress={() => void submitManualEntry()} style={[styles.button, isSavingEntry && styles.disabledButton]}>
+              <Text style={styles.buttonText}>{isSavingEntry ? 'Saving...' : `Save ${ledgerType} entry`}</Text>
+            </Pressable>
+          </View>
+        ) : null}
       </View>
       <SearchBox placeholder={`Search ${title.toLowerCase()}`} value={search} onChangeText={setSearch} />
       <View style={{ marginHorizontal: 12, marginBottom: 8 }}>
@@ -4947,25 +5623,382 @@ function CashBankLedgerScreen({
         <View style={[styles.ledgerTableRow, styles.ledgerTableHeader]}>
           <Text style={[styles.ledgerTableCell, { width: 70 }]}>DATE</Text>
           <Text style={[styles.ledgerTableCell, { flex: 1 }]}>PARTICULAR</Text>
-          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>REC</Text>
-          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>PAY</Text>
+          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>DR</Text>
+          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>CR</Text>
           <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 62 }]}>BAL</Text>
         </View>
-        {filteredLedgerRows.length ? filteredLedgerRows.map((entry) => (
-          <View key={entry.id} style={styles.ledgerTableRow}>
-            <Text style={[styles.ledgerTableCell, { width: 70 }]}>{formatDateForBill(entry.date)}</Text>
-            <View style={{ flex: 1, paddingRight: 2 }}>
-              <Text style={styles.ledgerParticularText} numberOfLines={2}>{entry.particular}</Text>
-              {entry.party ? <Text style={styles.ledgerPartyText} numberOfLines={1}>{partyShortForm(entry.party)} {entry.party}</Text> : null}
+        {filteredLedgerRows.length ? (
+          <>
+            <View style={[styles.ledgerTableRow, { backgroundColor: '#faf7f0' }]}>
+              <Text style={[styles.ledgerTableCell, { flex: 1, fontStyle: 'italic' }]}>Opening balance</Text>
+              <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 62, fontWeight: '700' }]}>{formatMoney(parseAmount(openingBalance))}</Text>
             </View>
-            <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>{entry.receipt > 0 ? formatMoney(entry.receipt) : '-'}</Text>
-            <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>{entry.payment > 0 ? formatMoney(entry.payment) : '-'}</Text>
-            <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 62 }]}>{formatMoney(entry.balance)}</Text>
-          </View>
-        )) : (
+            {filteredLedgerRows.map((entry) => (
+              <View key={entry.id} style={styles.ledgerTableRow}>
+                <Text style={[styles.ledgerTableCell, { width: 70 }]}>{formatDateForBill(entry.date)}</Text>
+                <View style={{ flex: 1, paddingRight: 2 }}>
+                  <Text style={styles.ledgerParticularText} numberOfLines={2}>{entry.particular}</Text>
+                  {entry.party ? <Text style={styles.ledgerPartyText} numberOfLines={1}>{partyShortForm(entry.party)} {entry.party}</Text> : null}
+                </View>
+                <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>{entry.receipt > 0 ? formatMoney(entry.receipt) : '-'}</Text>
+                <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>{entry.payment > 0 ? formatMoney(entry.payment) : '-'}</Text>
+                <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 62 }]}>{formatMoney(entry.balance)}</Text>
+              </View>
+            ))}
+            <View style={[styles.ledgerTableRow, styles.ledgerTableHeader]}>
+              <Text style={[styles.ledgerTableCell, { flex: 1 }]}>CLOSING BALANCE</Text>
+              <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>{formatMoney(receiptTotal)}</Text>
+              <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 60 }]}>{formatMoney(paymentTotal)}</Text>
+              <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 62 }]}>{formatMoney(closing)}</Text>
+            </View>
+          </>
+        ) : (
           <Text style={styles.emptyText}>Selected period me {title.toLowerCase()} entry nahi hai.</Text>
         )}
       </View>
+    </ScrollView>
+  );
+}
+
+function flowFineLabel(value: number): string {
+  const formatted = formatPlainNumber(value);
+  return formatted ? `${formatted} g` : '0';
+}
+
+// Fine margin is positive when we sold more fine than we sourced (gain), red
+// when we gave away more fine than we took in.
+function flowMarginColor(value: number): string {
+  if (value > 0.0005) return '#2f855a';
+  if (value < -0.0005) return '#c53030';
+  return '#4a5568';
+}
+
+function FlowLedgerScreen({ flow, onBack }: { flow: FlowLedgerSummary | null; onBack: () => void }) {
+  const [search, setSearch] = useState('');
+  const rows = flow?.rows ?? [];
+  const filtered = useMemo(
+    () => rows.filter((row) => includesSearch([row.partyName, row.supplierNames, row.billNo, formatDateForBill(row.date)], search)),
+    [rows, search],
+  );
+
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <PageHeader title="Flow ledger" onBack={onBack} />
+      <View style={styles.panel}>
+        <Text style={[styles.fieldLabel, { marginBottom: 8 }]}>Supplier stock vs party bill (live · {flow?.billCount ?? 0} bills)</Text>
+        <View style={styles.summaryGrid}>
+          <SummaryTile label="Supplier less" value={flowFineLabel(flow?.totalFineLinked ?? 0)} />
+          <SummaryTile label="Party fine credit" value={flowFineLabel(flow?.totalFineSold ?? 0)} />
+          <SummaryTile label="Fine margin" value={flowFineLabel(flow?.totalFineMargin ?? 0)} />
+          <SummaryTile label="Labour margin" value={formatMoney(flow?.totalLabourEarned ?? 0)} />
+          <SummaryTile label="Amount billed" value={formatMoney(flow?.totalAmount ?? 0)} />
+        </View>
+      </View>
+      <SearchBox placeholder="Search party, supplier, bill no" value={search} onChangeText={setSearch} />
+      <View style={styles.ledgerTable}>
+        <View style={[styles.ledgerTableRow, styles.ledgerTableHeader]}>
+          <Text style={[styles.ledgerTableCell, { flex: 1 }]}>BILL / PARTY</Text>
+          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 58 }]}>SUP LESS</Text>
+          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 58 }]}>PARTY</Text>
+          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 58 }]}>FINE MGN</Text>
+          <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 66 }]}>LAB MGN</Text>
+        </View>
+        {filtered.length ? filtered.map((row) => (
+          <View key={row.billId} style={styles.ledgerTableRow}>
+            <View style={{ flex: 1, paddingRight: 4 }}>
+              <Text style={styles.ledgerParticularText} numberOfLines={1}>#{row.billNo} · {row.partyName}</Text>
+              <Text style={styles.ledgerPartyText} numberOfLines={1}>Stock: {row.supplierNames} · {formatDateForBill(row.date)}</Text>
+            </View>
+            <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 58 }]}>{flowFineLabel(row.fineLinked)}</Text>
+            <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 58 }]}>{flowFineLabel(row.fineSold)}</Text>
+            <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 58, color: flowMarginColor(row.fineMargin), fontWeight: '700' }]}>{flowFineLabel(row.fineMargin)}</Text>
+            <Text style={[styles.ledgerTableCell, { textAlign: 'right', width: 66 }]}>{formatMoney(row.labourEarned)}</Text>
+          </View>
+        )) : (
+          <Text style={styles.emptyText}>No linked sale bills yet. Create bill me item ke supplier select karoge to party credit aur supplier stock less yaha dikhega. Supplier voucher sale se nahi banega.</Text>
+        )}
+      </View>
+    </ScrollView>
+  );
+}
+
+// Full bill-style item entry for a supplier purchase: reuses the same ItemEditor
+// (name autocomplete, gross/packet-less/touch/pcs/labour/rate → fine) as bill
+// creation, scoped to one supplier.
+function SupplierPurchaseScreen({
+  supplier,
+  itemNameOptions,
+  rates,
+  onBack,
+  onCreateItemName,
+  onSavePurchase,
+}: {
+  supplier: SupplierAccount;
+  itemNameOptions: ItemNameOption[];
+  rates: MetalRates;
+  onBack: () => void;
+  onCreateItemName: (name: string, material: MetalType) => Promise<boolean>;
+  onSavePurchase: (input: SupplierTransactionFormInput) => Promise<SupplierTransaction | false>;
+}) {
+  const [items, setItems] = useState<BillItemDraft[]>([emptyItem('silver')]);
+  const [transactionDate, setTransactionDate] = useState(localIsoDate());
+  const [bookedRate, setBookedRate] = useState('');
+  const [note, setNote] = useState('');
+  const [editingItemIndex, setEditingItemIndex] = useState<number | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  function updateItem(index: number, key: keyof BillItemDraft, value: string) {
+    setItems((current) =>
+      current.map((item, itemIndex) => {
+        if (itemIndex !== index) return item;
+        const nextItem = { ...item, [key]: value };
+        if (key === 'weight' || key === 'packetLess') {
+          const parsed = parseFloat(value);
+          if (!isNaN(parsed) && parsed > 0) nextItem[key] = roundWeight(parsed).toString();
+        }
+        const calculated = autoCalculateItem(nextItem, rates);
+        return key === 'rate' ? { ...calculated, rate: nextItem.rate } : calculated;
+      }),
+    );
+  }
+
+  const cleanItems = items.filter((item) => item.itemName.trim() || parseAmount(item.weight) > 0);
+  const totalFine = cleanItems.reduce((sum, item) => sum + parseAmount(item.fine), 0);
+  const totalPcs = cleanItems.reduce((sum, item) => sum + parseAmount(item.pcs), 0);
+  const totalAmount = cleanItems.reduce((sum, item) => sum + parseAmount(item.amount), 0);
+  const payable = parseAmount(bookedRate) > 0 ? (totalFine * parseAmount(bookedRate)) / 1000 : totalAmount;
+
+  async function submit() {
+    const purchaseItems = cleanItems.map((item) => ({
+      itemName: item.itemName.trim(),
+      pcs: item.pcs.trim(),
+      weight: item.weight.trim(),
+      touch: item.touch.trim(),
+      fine: String(parseAmount(item.fine)),
+      rate: item.rate.trim(),
+      amount: String(parseAmount(item.amount)),
+    }));
+    if (!purchaseItems.length) {
+      Alert.alert('Item required', 'Kam se kam ek item daalo.');
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const saved = await onSavePurchase({
+        bankAmount: '',
+        bookedRate,
+        cashAmount: '',
+        discountAmount: '',
+        fineWeight: String(totalFine),
+        material: 'silver',
+        mode: 'purchase',
+        note,
+        transactionDate: formatDateForBill(transactionDate),
+        items: purchaseItems,
+      });
+      if (saved) onBack();
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <PageHeader title={`${supplier.name} purchase`} onBack={onBack} />
+      <View style={styles.panel}>
+        <View style={styles.formGrid}>
+          <DateField label="Purchase date" value={transactionDate} onChangeText={setTransactionDate} />
+          <Field keyboardType="decimal-pad" label="Booked rate (silver / 1 kg)" selectTextOnFocus value={bookedRate} onChangeText={setBookedRate} />
+        </View>
+      </View>
+
+      <Section title="Purchase items" />
+      {items.map((item, index) => (
+        <Pressable key={item.id} onPress={() => setEditingItemIndex(index)} style={styles.collapsedItemRow}>
+          <View>
+            <Text style={styles.collapsedItemTitle}>{index + 1}. {item.itemName || 'Blank item'}</Text>
+            <Text style={styles.collapsedItemMeta}>
+              {item.pcs || '0'} pcs | {formatCalcValue(parseAmount(item.fine), 3) || '0'} gm fine | ₹ {formatBillMoney(item.amount, false)}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#cbd5e0" />
+        </Pressable>
+      ))}
+
+      {editingItemIndex !== null && (
+        <ItemEditor
+          index={editingItemIndex}
+          item={items[editingItemIndex]}
+          itemNameOptions={itemNameOptions}
+          language="en"
+          rateInputValue={items[editingItemIndex]?.rate ?? ''}
+          autoRoundFigure={false}
+          onChange={updateItem}
+          onCreateItemName={onCreateItemName}
+          onRemove={(i) => setItems((current) => current.filter((_, idx) => idx !== i))}
+          onDone={() => setEditingItemIndex(null)}
+          rates={rates}
+          removable={items.length > 1}
+          billType="estimate"
+          supplierAccounts={[]}
+          hideSupplier
+        />
+      )}
+
+      <Pressable onPress={() => setItems((current) => [...current, emptyItem('silver')])} style={[styles.button, styles.secondaryButton, styles.addItemButton]}>
+        <Text style={styles.addItemButtonText}>Add item</Text>
+      </Pressable>
+
+      <View style={styles.panel}>
+        <View style={styles.summaryGrid}>
+          <SummaryTile label="Total pcs" value={`${totalPcs || 0}`} />
+          <SummaryTile label="Total fine" value={`${formatCalcValue(totalFine, 3) || '0'} gm`} />
+          <SummaryTile label="Amount payable" value={formatMoney(payable)} />
+        </View>
+        <Field label="Note" multiline value={note} onChangeText={setNote} />
+        <Pressable disabled={isSaving} onPress={() => void submit()} style={[styles.button, isSaving && styles.disabledButton]}>
+          <Text style={styles.buttonText}>{isSaving ? 'Saving purchase...' : 'Save purchase + voucher PDF'}</Text>
+        </Pressable>
+      </View>
+    </ScrollView>
+  );
+}
+
+function SettingsScreen({ onBack }: { onBack: () => void }) {
+  const db = useDatabase();
+  const [email, setEmail] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [pwMessage, setPwMessage] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
+  const [lockSet, setLockSet] = useState(false);
+  const [pin, setPin] = useState('');
+  const [pin2, setPin2] = useState('');
+  const [lockMessage, setLockMessage] = useState('');
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [thisDeviceId, setThisDeviceId] = useState('');
+
+  async function loadDevices(forEmail: string) {
+    if (!forEmail) return;
+    setDevices(await getDevicesForUser(db, forEmail));
+  }
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const s = await getCurrentSession();
+      const e = getSessionEmail(s);
+      if (!active) return;
+      setEmail(e);
+      setThisDeviceId(await getDeviceId());
+      await loadDevices(e);
+    })();
+    isAppLockSet().then((set) => { if (active) setLockSet(set); });
+    return () => { active = false; };
+  }, []);
+
+  async function removeDevice(id: string) {
+    await setDeviceRevoked(db, id, true);
+    void uploadPendingChanges(db);
+    await loadDevices(email);
+  }
+
+  async function doChangePassword() {
+    if (newPassword.length < 6) { setPwMessage('Password kam se kam 6 character ka ho.'); return; }
+    setPwBusy(true);
+    try {
+      const { error } = await changePassword(newPassword);
+      setPwMessage(error ?? 'Password update ho gaya.');
+      if (!error) setNewPassword('');
+    } finally {
+      setPwBusy(false);
+    }
+  }
+
+  async function saveLock() {
+    if (pin.length < 4) { setLockMessage('PIN kam se kam 4 digit ka ho.'); return; }
+    if (pin !== pin2) { setLockMessage('Dono PIN match nahi kar rahe.'); return; }
+    await setAppLockPin(pin);
+    setLockSet(true);
+    setPin('');
+    setPin2('');
+    setLockMessage('App lock set ho gaya. Agli baar app khulte hi PIN poochega.');
+  }
+
+  async function removeLock() {
+    await clearAppLockPin();
+    setLockSet(false);
+    setLockMessage('App lock hata diya.');
+  }
+
+  return (
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <PageHeader title="Settings" onBack={onBack} />
+
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>Account</Text>
+        <Text style={styles.sectionHelp}>{email ? `Signed in as ${email}` : 'Local mode (no login).'}</Text>
+        {isAuthEnabled() ? (
+          <Pressable onPress={() => void signOutUser()} style={[styles.button, styles.secondaryButton]}>
+            <Text style={styles.secondaryButtonText}>Sign out</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      {isAuthEnabled() && email ? (
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Change password</Text>
+          <Field label="New password" value={newPassword} onChangeText={setNewPassword} />
+          {pwMessage ? <Text style={{ color: '#4a5568', fontSize: 13, marginBottom: 8 }}>{pwMessage}</Text> : null}
+          <Pressable disabled={pwBusy} onPress={() => void doChangePassword()} style={[styles.button, pwBusy && styles.disabledButton]}>
+            <Text style={styles.buttonText}>{pwBusy ? 'Updating...' : 'Update password'}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>App lock</Text>
+        <Text style={styles.sectionHelp}>{lockSet ? 'App lock ON — PIN required on open.' : 'Set a PIN to lock the app on open.'}</Text>
+        <Field keyboardType="number-pad" label={lockSet ? 'New PIN' : 'PIN'} value={pin} onChangeText={setPin} />
+        <Field keyboardType="number-pad" label="Confirm PIN" value={pin2} onChangeText={setPin2} />
+        {lockMessage ? <Text style={{ color: '#4a5568', fontSize: 13, marginBottom: 8 }}>{lockMessage}</Text> : null}
+        <Pressable onPress={() => void saveLock()} style={styles.button}>
+          <Text style={styles.buttonText}>{lockSet ? 'Change PIN' : 'Set app lock'}</Text>
+        </Pressable>
+        {lockSet ? (
+          <Pressable onPress={() => void removeLock()} style={[styles.button, styles.secondaryButton]}>
+            <Text style={styles.secondaryButtonText}>Remove app lock</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      {isAuthEnabled() && email ? (
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Devices</Text>
+          <Text style={styles.sectionHelp}>Logged-in devices for this account. Remove signs that device out on its next app open.</Text>
+          {devices.length ? (
+            devices.map((d) => {
+              const isThis = d.id === thisDeviceId;
+              return (
+                <View key={d.id} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: '#edf2f7', paddingVertical: 10 }}>
+                  <View style={{ flex: 1, paddingRight: 8 }}>
+                    <Text style={{ fontWeight: '700', color: '#2d3748' }}>
+                      {d.deviceName || d.platform || 'Device'}{isThis ? ' (this device)' : ''}{d.revoked ? ' · removed' : ''}
+                    </Text>
+                    <Text style={{ color: '#718096', fontSize: 12, marginTop: 2 }}>Last seen {formatDateForBill((d.lastSeen || '').slice(0, 10))}</Text>
+                  </View>
+                  {!isThis && !d.revoked ? (
+                    <Pressable onPress={() => void removeDevice(d.id)} style={{ paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: '#c53030' }}>
+                      <Text style={{ color: '#c53030', fontWeight: '700', fontSize: 13 }}>Remove</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              );
+            })
+          ) : (
+            <Text style={styles.emptyText}>No other devices yet.</Text>
+          )}
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
@@ -5290,6 +6323,7 @@ function BillViewScreen({
   payload,
   transactions,
   returns = [],
+  billBalance = null,
 }: {
   billId: string | null;
   onBack: () => void;
@@ -5301,7 +6335,9 @@ function BillViewScreen({
   payload: BillPayload;
   transactions: BillTransaction[];
   returns?: (JangadReturnVoucher & { items: JangadReturnItem[] })[];
+  billBalance?: BillBalance | null;
 }) {
+  const [billVersion, setBillVersion] = useState<'original' | 'outstanding'>('original');
   const [showEditMenu, setShowEditMenu] = useState(false);
   const [transactionMode, setTransactionMode] = useState<BillTransactionMode>('cash');
   const [transactionDate, setTransactionDate] = useState(localIsoDate());
@@ -5376,6 +6412,32 @@ function BillViewScreen({
             <Pressable onPress={() => onConvertToEstimate(payload)} style={styles.smallButton}>
               <Text style={styles.smallButtonText}>Make estimate bill</Text>
             </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+
+      {billBalance ? (
+        <View style={[styles.panel, { marginBottom: 8 }]}>
+          <Text style={styles.fieldLabel}>Bill version</Text>
+          <View style={{ marginTop: 6 }}>
+            <Segment
+              options={[
+                { label: 'Original', value: 'original' },
+                { label: 'Outstanding', value: 'outstanding' },
+              ]}
+              value={billVersion}
+              onChange={setBillVersion}
+            />
+          </View>
+          {billVersion === 'outstanding' ? (
+            <View style={[styles.summaryGrid, { marginTop: 10 }]}>
+              <SummaryTile label="Fine due" value={`${formatPlainNumber(billBalance.fineDue) || '0'} g`} />
+              <SummaryTile label="Fine paid" value={`${formatPlainNumber(billBalance.finePaid) || '0'} g`} />
+              <SummaryTile label="Fine outstanding" value={`${formatPlainNumber(billBalance.fineOutstanding) || '0'} g`} />
+              <SummaryTile label="Amount due" value={formatMoney(billBalance.amountDue)} />
+              <SummaryTile label="Amount paid" value={formatMoney(billBalance.amountPaid)} />
+              <SummaryTile label="Amount outstanding" value={formatMoney(billBalance.amountOutstanding)} />
+            </View>
           ) : null}
         </View>
       ) : null}
@@ -5460,6 +6522,8 @@ function ItemEditor({
   rates,
   rateInputValue,
   removable,
+  supplierAccounts,
+  hideSupplier = false,
 }: {
   autoRoundFigure: boolean;
   billType: BillType;
@@ -5474,6 +6538,8 @@ function ItemEditor({
   rates: MetalRates;
   rateInputValue: string;
   removable: boolean;
+  supplierAccounts: SupplierAccount[];
+  hideSupplier?: boolean;
 }) {
   const rate = getMetalRatePerGram(item.material, rates);
   const [showItemNames, setShowItemNames] = useState(false);
@@ -5601,6 +6667,58 @@ function ItemEditor({
               </View>
             ) : null}
 
+            {!hideSupplier ? (
+            <View style={[styles.segmentBlock, { marginBottom: 16 }]}>
+              <Text style={styles.fieldLabel}>Supplier (metal source)</Text>
+              {supplierAccounts.length ? (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
+                  <Pressable
+                    onPress={() => {
+                      onChange(index, 'supplierId', '');
+                      onChange(index, 'supplierName', '');
+                    }}
+                    style={{
+                      paddingVertical: 8,
+                      paddingHorizontal: 14,
+                      borderRadius: 16,
+                      borderWidth: 1,
+                      borderColor: !item.supplierId ? '#007a66' : '#cbd5e0',
+                      backgroundColor: !item.supplierId ? '#007a66' : '#fff',
+                    }}
+                  >
+                    <Text style={{ color: !item.supplierId ? '#fff' : '#4a5568', fontWeight: '600', fontSize: 13 }}>None</Text>
+                  </Pressable>
+                  {supplierAccounts.map((supplier) => {
+                    const selected = item.supplierId === supplier.id;
+                    return (
+                      <Pressable
+                        key={supplier.id}
+                        onPress={() => {
+                          onChange(index, 'supplierId', supplier.id);
+                          onChange(index, 'supplierName', supplier.name);
+                        }}
+                        style={{
+                          paddingVertical: 8,
+                          paddingHorizontal: 14,
+                          borderRadius: 16,
+                          borderWidth: 1,
+                          borderColor: selected ? '#007a66' : '#cbd5e0',
+                          backgroundColor: selected ? '#007a66' : '#fff',
+                        }}
+                      >
+                        <Text style={{ color: selected ? '#fff' : '#4a5568', fontWeight: '600', fontSize: 13 }}>{supplier.name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              ) : (
+                <Text style={{ color: '#a0aec0', fontSize: 12, paddingVertical: 6 }}>
+                  Add suppliers in the Suppliers screen to link this item's metal source.
+                </Text>
+              )}
+            </View>
+            ) : null}
+
             <View style={styles.formGrid}>
                <Field
                   keyboardType="decimal-pad"
@@ -5625,6 +6743,7 @@ function ItemEditor({
                 <Field
                   keyboardType="decimal-pad"
                   label="Touch %"
+                  placeholder="100"
                   value={item.touch}
                   onChangeText={(value) => onChange(index, 'touch', value)}
                 />
@@ -5746,13 +6865,31 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
   return (
     <View style={[styles.previewCard, styles.estimatePreview]}>
       <View style={styles.previewHeader}>
-        <View>
+        <View style={styles.previewMetaBlock}>
           <Text style={styles.previewTitle}>{title}</Text>
-          <Text style={styles.previewShop}>{SHOP.name}</Text>
           <Text style={styles.previewMeta}>{t(language, 'billNo')} : {payload.billNo}</Text>
         </View>
-        <BrandLogo size={46} />
-        <Text style={styles.previewMeta}>{t(language, 'date')} : {formatDateForBill(payload.billDate)}</Text>
+        <View style={styles.previewBrandCenter}>
+          <BrandLogo size={40} />
+          <Text style={styles.previewShop}>{SHOP.name}</Text>
+          <Text style={styles.previewTagline}>{SHOP.tagline}</Text>
+        </View>
+        <View style={styles.previewMetaBlockRight}>
+          <Text style={styles.previewMeta}>{t(language, 'date')} : {formatDateForBill(payload.billDate)}</Text>
+        </View>
+      </View>
+      <View style={styles.previewOwnerGrid}>
+        {SHOP.owners.map((owner) => (
+          <View key={owner.mobile} style={styles.previewOwnerCard}>
+            <Text style={styles.previewOwnerName}>{owner.name}</Text>
+            <Text style={styles.previewOwnerMobile}>{owner.mobile}</Text>
+          </View>
+        ))}
+      </View>
+      <View style={styles.previewAddressStrip}>
+        {SHOP.addressLines.map((line) => (
+          <Text key={line} style={styles.previewAddressStripText}>{line}</Text>
+        ))}
       </View>
 
       <View style={styles.previewLineGrid}>
@@ -5901,7 +7038,10 @@ function BillPreview({ payload, transactions = [] }: { payload: BillPayload; tra
         <View style={styles.previewFooterLeft}>
           <Text style={styles.previewTerms}>{t(language, 'reportLine1')} {t(language, 'reportLine2')}</Text>
         </View>
-        <Text style={styles.previewSignature}>{t(language, 'signature')} :</Text>
+        <View style={styles.previewSignatureBox}>
+          <Image source={{ uri: SIGNATURE_DATA_URI }} style={styles.previewSignatureImage} resizeMode="contain" />
+          <Text style={styles.previewSignature}>{t(language, 'signature')} :</Text>
+        </View>
       </View>
     </View>
   );
@@ -6259,9 +7399,11 @@ function JangadBookScreen({
 
 function BrandLogo({ size = 56 }: { size?: number }) {
   return (
-    <View style={[styles.brandLogo, { borderRadius: size / 2, height: size, width: size }]}>
-      <Text style={[styles.brandLogoText, { fontSize: Math.round(size * 0.38) }]}>{SHOP.initials}</Text>
-    </View>
+    <Image
+      source={require('./assets/logo-mark.png')}
+      style={{ height: size, width: size }}
+      resizeMode="contain"
+    />
   );
 }
 
@@ -6488,6 +7630,7 @@ function Field({
   label,
   multiline,
   onChangeText,
+  placeholder,
   selectTextOnFocus,
   value,
 }: {
@@ -6496,6 +7639,7 @@ function Field({
   label: string;
   multiline?: boolean;
   onChangeText: (value: string) => void;
+  placeholder?: string;
   selectTextOnFocus?: boolean;
   value: string;
 }) {
@@ -6509,7 +7653,7 @@ function Field({
         keyboardType={keyboardType}
         multiline={multiline}
         onChangeText={onChangeText}
-        placeholder={label}
+        placeholder={placeholder ?? label}
         placeholderTextColor="#a79a90"
         selectTextOnFocus={selectTextOnFocus}
         style={[styles.input, multiline && styles.multilineInput, !editable && styles.readonlyInput]}
@@ -6609,20 +7753,20 @@ const styles = StyleSheet.create({
   accountHero: {
     backgroundColor: '#fffdfa',
     borderColor: '#e4d8ce',
-    borderRadius: 8,
+    borderRadius: 6,
     borderWidth: 1,
-    padding: 10,
+    padding: 8,
   },
   accountHeroMeta: {
     color: '#6d665f',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
-    lineHeight: 17,
-    marginTop: 4,
+    lineHeight: 15,
+    marginTop: 2,
   },
   accountHeroTitle: {
     color: '#241b17',
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '900',
   },
   addItemAction: {
@@ -7460,8 +8604,20 @@ const styles = StyleSheet.create({
   previewHeader: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
     justifyContent: 'space-between',
+  },
+  previewBrandCenter: {
+    alignItems: 'center',
+    flex: 1,
+    gap: 2,
+  },
+  previewMetaBlock: {
+    flex: 1,
+  },
+  previewMetaBlockRight: {
+    alignItems: 'flex-end',
+    flex: 1,
   },
   previewItemCell: {
     flex: 1.5,
@@ -7480,13 +8636,55 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
-    marginTop: 14,
+    marginTop: 10,
   },
   previewMeta: {
     color: '#6d665f',
     fontSize: 12,
     fontWeight: '800',
     marginTop: 3,
+  },
+  previewOwnerGrid: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 7,
+  },
+  previewOwnerCard: {
+    alignItems: 'center',
+    backgroundColor: '#fffaf3',
+    borderBottomColor: '#b34654',
+    borderBottomWidth: 1,
+    borderTopColor: '#b34654',
+    borderTopWidth: 1,
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  previewOwnerName: {
+    color: '#6d2530',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  previewOwnerMobile: {
+    color: '#3d1a1c',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  previewAddressStrip: {
+    backgroundColor: '#6c1b18',
+    gap: 1,
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  previewAddressStripText: {
+    color: '#fff8e9',
+    fontSize: 8,
+    fontWeight: '800',
+    lineHeight: 10,
   },
   previewRow: {
     borderBottomColor: '#eadfd5',
@@ -7497,8 +8695,15 @@ const styles = StyleSheet.create({
   },
   previewShop: {
     color: '#241b17',
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  previewTagline: {
+    color: '#6d2530',
+    fontSize: 8,
+    fontWeight: '900',
+    textAlign: 'center',
     textTransform: 'uppercase',
   },
   previewScroll: {
@@ -7587,6 +8792,14 @@ const styles = StyleSheet.create({
     minWidth: 150,
     paddingBottom: 4,
     textAlign: 'right',
+  },
+  previewSignatureBox: {
+    alignItems: 'flex-end',
+  },
+  previewSignatureImage: {
+    height: 58,
+    marginBottom: -12,
+    width: 130,
   },
   previewSummaryBlock: {
     alignItems: 'flex-start',
@@ -8133,7 +9346,7 @@ const styles = StyleSheet.create({
   stripSummary: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
   },
   miniButton: {
     alignItems: 'center',
@@ -8152,29 +9365,29 @@ const styles = StyleSheet.create({
   },
   summaryGrid: {
     flexDirection: 'row',
-    gap: 12,
-    marginBottom: 16,
+    gap: 6,
+    marginBottom: 10,
   },
   summaryLabel: {
     color: '#718096',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
     textTransform: 'uppercase',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   summaryTile: {
     flex: 1,
     backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 12,
+    borderRadius: 6,
+    padding: 8,
     borderWidth: 1,
     borderColor: '#edf2f7',
-    minHeight: 64,
+    minHeight: 44,
     justifyContent: 'center',
   },
   summaryValue: {
     color: '#1a202c',
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: '800',
   },
   syncMessage: {
@@ -8998,6 +10211,7 @@ function BillScreen({
   silverRate,
   isSaving,
   itemNameOptions,
+  supplierAccounts,
   language,
   lastSavedPayload,
   onAddItem,
@@ -9060,6 +10274,7 @@ function BillScreen({
   silverRate: string;
   isSaving: boolean;
   itemNameOptions: ItemNameOption[];
+  supplierAccounts: SupplierAccount[];
   language: Language;
   lastSavedPayload: BillPayload | null;
   onAddItem: () => void;
@@ -9267,6 +10482,7 @@ function BillScreen({
               rates={rates}
               removable={billPayload.items.length > 1}
               billType={billPayload.billType}
+              supplierAccounts={supplierAccounts}
             />
       )}
 
@@ -9491,22 +10707,30 @@ function RatesScreen({
 function MarketStockScreen({
   marketDate,
   marketSilverWeight,
+  marketActualRemaining,
   marketNote,
+  isPdfBusy,
   onBack,
   onDateChange,
   onSilverWeightChange,
+  onActualRemainingChange,
   onNoteChange,
   onSave,
+  onSharePdf,
   rows,
 }: {
   marketDate: string;
   marketSilverWeight: string;
+  marketActualRemaining: string;
   marketNote: string;
+  isPdfBusy: boolean;
   onBack: () => void;
   onDateChange: (value: string) => void;
   onSilverWeightChange: (value: string) => void;
+  onActualRemainingChange: (value: string) => void;
   onNoteChange: (value: string) => void;
   onSave: () => void;
+  onSharePdf: () => void;
   rows: MarketStockSummary[];
 }) {
   const [search, setSearch] = useState('');
@@ -9526,15 +10750,24 @@ function MarketStockScreen({
         <View style={styles.formGrid}>
         <DateField label="Date" value={marketDate} onChangeText={onDateChange} />
           <Field keyboardType="decimal-pad" label="Silver carried (kg)" selectTextOnFocus value={marketSilverWeight} onChangeText={onSilverWeightChange} />
+          <Field keyboardType="decimal-pad" label="Actual remaining at day-end (kg)" selectTextOnFocus value={marketActualRemaining} onChangeText={onActualRemainingChange} />
           <Field label="Note" multiline value={marketNote} onChangeText={onNoteChange} />
         </View>
         {selectedRow ? (
-          <Text style={styles.sectionHelp}>
-            Saved: Silver {gmText(selectedRow.silverWeight)} | Silver {kgTextFromGm(selectedRow.silverWeight)}
-          </Text>
+          <View style={styles.summaryGrid}>
+            <SummaryTile label="Taken" value={gmText(selectedRow.silverWeight)} />
+            <SummaryTile label="Sold (live)" value={gmText(selectedRow.silverSold)} />
+            <SummaryTile label="Should remain" value={gmText(selectedRow.silverRemaining)} />
+            {selectedRow.closed ? <SummaryTile label="Actually remained" value={gmText(selectedRow.actualSilverRemaining)} /> : null}
+            {selectedRow.closed ? <SummaryTile label="Variance" value={gmText(selectedRow.silverVariance)} /> : null}
+          </View>
         ) : null}
+        <Text style={styles.sectionHelp}>Fill actual remaining only at day-end — it reconciles (closes) the day.</Text>
         <Pressable onPress={onSave} style={styles.button}>
-          <Text style={styles.buttonText}>Save market stock</Text>
+          <Text style={styles.buttonText}>{marketActualRemaining.trim() ? 'Save & reconcile day' : 'Save market stock'}</Text>
+        </Pressable>
+        <Pressable onPress={onSharePdf} disabled={isPdfBusy} style={[styles.button, styles.secondaryButton, isPdfBusy && styles.disabledButton]}>
+          <Text style={styles.secondaryButtonText}>{isPdfBusy ? 'Generating PDF...' : 'Reconciliation PDF'}</Text>
         </Pressable>
       </View>
 
@@ -9549,13 +10782,18 @@ function MarketStockScreen({
                 <Text style={styles.recentCustomer}>{row.note || `${row.billCount} bills created`}</Text>
               </View>
               <View style={styles.marketGrid}>
-                <SummaryTile label="Silver taken" value={gmText(row.silverWeight)} />
-                <SummaryTile label="Silver sold" value={gmText(row.silverSold)} />
-                <SummaryTile label="Silver balance" value={gmText(row.silverRemaining)} />
-                <SummaryTile label="Silver taken" value={kgTextFromGm(row.silverWeight)} />
-                <SummaryTile label="Silver sold" value={kgTextFromGm(row.silverSold)} />
-                <SummaryTile label="Silver balance" value={kgTextFromGm(row.silverRemaining)} />
+                <SummaryTile label="Taken" value={gmText(row.silverWeight)} />
+                <SummaryTile label="Sold" value={gmText(row.silverSold)} />
+                <SummaryTile label="Should remain" value={gmText(row.silverRemaining)} />
+                {row.closed ? <SummaryTile label="Actually remained" value={gmText(row.actualSilverRemaining)} /> : null}
+                {row.closed ? <SummaryTile label="Variance" value={gmText(row.silverVariance)} /> : null}
+                {!row.closed ? <SummaryTile label="Status" value="Open" /> : null}
               </View>
+              {row.closed && Math.abs(row.silverVariance) > 0.001 ? (
+                <Text style={{ color: row.silverVariance > 0 ? '#c53030' : '#2f855a', fontWeight: '700', fontSize: 12, marginTop: 4 }}>
+                  {row.silverVariance > 0 ? `Short by ${gmText(row.silverVariance)}` : `Extra ${gmText(Math.abs(row.silverVariance))}`}
+                </Text>
+              ) : null}
             </View>
           ))
         ) : (
