@@ -4525,7 +4525,10 @@ function PartiesScreen({
                 <Text style={styles.folderMeta}>{folder.customerAddress || 'No address'}</Text>
                 <PartyLedgerPills ledger={partyLedgerMap.get(folder.customerId)} />
               </View>
-              <Text style={styles.folderAmount}>{formatMoney(partyLedgerMap.get(folder.customerId)?.labourBalance ?? folder.totalAmount)}</Text>
+              <View style={styles.folderAmountCol}>
+                <Text style={styles.folderAmountFine}>{ledgerFineValue(partyLedgerMap.get(folder.customerId))}</Text>
+                <Text style={styles.folderAmountDue}>{formatMoney(partyLedgerMap.get(folder.customerId)?.labourBalance ?? folder.totalAmount)}</Text>
+              </View>
             </Pressable>
           ))
         ) : (
@@ -7956,6 +7959,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '900',
     textAlign: 'right',
+  },
+  folderAmountCol: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  folderAmountFine: {
+    color: '#b8860b',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  folderAmountDue: {
+    color: '#201917',
+    fontSize: 13,
+    fontWeight: '900',
   },
   folderAmountBlock: {
     alignItems: 'flex-end',
