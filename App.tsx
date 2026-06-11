@@ -3526,6 +3526,7 @@ function JewelleryBillBook() {
       const reminderMessage = savedReminder ? ` Reminder ${formatDateTime(savedReminder.dueAt)} set.` : '';
       setSyncMessage(`Bill ${savedPayload.billNo} ${editingBillId ? 'updated' : 'saved'}. ${bookStatusMessage}${reminderMessage}`);
       void triggerBackgroundUpload();
+      await refreshScreen();
       resetBillDraft();
       setScreen('home');
       const saveMessage = `Bill ${savedPayload.billNo} ${editingBillId ? 'updated' : 'saved'}. ${bookStatusMessage}${reminderMessage} Background sync active.`;
@@ -3691,6 +3692,7 @@ function JewelleryBillBook() {
     });
 
     void triggerBackgroundUpload();
+    await refreshScreen();
     const transactions = await getBillTransactions(db, viewingBillId);
     setViewingBillTransactions(transactions);
     setSyncMessage('Bill transaction saved. Background sync active.');
