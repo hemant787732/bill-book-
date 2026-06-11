@@ -7696,7 +7696,7 @@ function SummaryTile({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.summaryTile}>
       <Text style={styles.summaryLabel}>{label}</Text>
-      <Text style={styles.summaryValue} numberOfLines={1}>{value}</Text>
+      <Text style={styles.summaryValue}>{value}</Text>
     </View>
   );
 }
@@ -9387,8 +9387,9 @@ const styles = StyleSheet.create({
   },
   summaryValue: {
     color: '#1a202c',
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '800',
+    flexShrink: 0,
   },
   syncMessage: {
     color: '#6b625b',
