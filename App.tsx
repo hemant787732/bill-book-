@@ -7696,7 +7696,7 @@ function SummaryTile({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.summaryTile}>
       <Text style={styles.summaryLabel}>{label}</Text>
-      <Text style={styles.summaryValue}>{value}</Text>
+      <Text style={styles.summaryValue} numberOfLines={1}>{value}</Text>
     </View>
   );
 }

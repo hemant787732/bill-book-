@@ -192,7 +192,7 @@ function SummaryTile({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.summaryTile}>
       <Text style={styles.summaryLabel}>{label}</Text>
-      <Text style={styles.summaryValue}>{value}</Text>
+      <Text style={styles.summaryValue} numberOfLines={1}>{value}</Text>
     </View>
   );
 }
@@ -1038,20 +1038,20 @@ const styles = StyleSheet.create({
   summaryStrip: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 6,
   },
   summaryTile: {
     backgroundColor: '#fff',
-    borderRadius: 8,
+    borderRadius: 6,
     flex: 1,
-    gap: 4,
-    minWidth: 150,
-    padding: 12,
+    gap: 2,
+    minWidth: 100,
+    padding: 8,
   },
   summaryValue: {
     color: '#263238',
     fontFamily: 'serif',
-    fontSize: 18,
+    fontSize: 13,
     fontWeight: '900',
   },
   supplierCard: {
