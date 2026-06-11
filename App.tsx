@@ -7854,7 +7854,6 @@ const styles = StyleSheet.create({
   calcRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
     marginTop: 2,
   },
   calcValue: {
@@ -8128,7 +8127,6 @@ const styles = StyleSheet.create({
   formGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
     marginBottom: 8,
   },
   hero: {
@@ -9143,7 +9141,6 @@ const styles = StyleSheet.create({
   createRateCutBaseGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 7,
     marginTop: 6,
   },
   createRateCutBaseText: {
@@ -9455,7 +9452,6 @@ const styles = StyleSheet.create({
   totalGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 7,
     marginTop: 8,
   },
   totalTile: {
