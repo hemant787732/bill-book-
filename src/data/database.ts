@@ -47,7 +47,7 @@ import { calculateLabourCharge, calculateNetWeight, calculateSubtotal, calculate
 import { createId, localIsoDate, nowIso, parseAmount } from '../utils/format';
 import { scheduleImmediateUpload } from './sync';
 
-const DATABASE_VERSION = 24;
+const DATABASE_VERSION = 25;
 
 type RateRow = {
   id: string;
@@ -990,6 +990,7 @@ export async function migrateDbIfNeeded(db: LocalDatabase) {
         rate TEXT NOT NULL DEFAULT '',
         labour_type TEXT NOT NULL DEFAULT 'gw',
         labour TEXT NOT NULL,
+        other TEXT NOT NULL DEFAULT '',
         amount TEXT NOT NULL,
         supplier_id TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL,
@@ -1550,6 +1551,12 @@ export async function migrateDbIfNeeded(db: LocalDatabase) {
         sync_status TEXT NOT NULL DEFAULT 'pending'
       );
       CREATE INDEX IF NOT EXISTS devices_user_idx ON devices(user_email);
+    `);
+  }
+
+  if (currentVersion >= 1 && currentVersion < 25) {
+    await db.execAsync(`
+      ALTER TABLE bill_items ADD COLUMN other TEXT NOT NULL DEFAULT '';
     `);
   }
 
