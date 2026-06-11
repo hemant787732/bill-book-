@@ -1041,11 +1041,10 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   summaryTile: {
+    width: '50%',
     backgroundColor: '#fff',
     borderRadius: 6,
-    flex: 1,
     gap: 2,
-    minWidth: 80,
     padding: 8,
   },
   summaryValue: {
